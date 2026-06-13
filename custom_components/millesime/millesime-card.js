@@ -372,10 +372,24 @@ class MillesimeCard extends HTMLElement {
     set('--font-serif', this._fontSerif);
     set('--font-sans',  this._fontSans);
     this.style.fontFamily = this._fontSans;
-    this.style.fontSize   = (parseFloat(cfg.font_size) || 13) + 'px';
     this._injectFonts(serifName, sansName, cfg.font_url);
-    this._fsBase = parseFloat(cfg.font_size) || 13;
-    set('--fs-base', this._fsBase + 'px');
+    if (cfg.font_size) {
+      // Réglage explicite : taille fixe (priorité à la config YAML)
+      this._fsBase = parseFloat(cfg.font_size) || 14;
+      this.style.fontSize = this._fsBase + 'px';
+      set('--fs-base', this._fsBase + 'px');
+      this._fsModalCss = this._fsBase + 'px';
+    } else {
+      // Base FLUIDE par défaut : suit la largeur de la CARTE (unité cqi résolue via
+      // le conteneur :host), bornée 13–15px. Tout le texte étant en em, l'ensemble
+      // s'adapte en continu. Appliquée sur .card car un conteneur ne peut pas se
+      // mesurer lui-même (cqi sur :host viserait le viewport).
+      this._fsBase = 14;                       // médiane pour les calculs JS (labels 2D)
+      this.style.removeProperty('font-size');
+      set('--fs-base', 'clamp(13px, 3.4cqi, 15px)');
+      // Popups hors conteneur (document.body) → fluide en vw au lieu de cqi.
+      this._fsModalCss = 'clamp(13px, 3.6vw, 15px)';
+    }
   }
 
   _injectFonts(serifName, sansName, customUrl) {
@@ -589,9 +603,9 @@ class MillesimeCard extends HTMLElement {
       const overlay = document.createElement("div");
       overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:100000;display:flex;align-items:center;justify-content:center";
       overlay.style.setProperty('--font-sans', this._fontSans || "'Inter', sans-serif");
-      overlay.style.setProperty('--fs-base',  (this._fsBase  || 13) + 'px');
+      overlay.style.setProperty('--fs-base',  this._fsModalCss || ((this._fsBase || 14) + 'px'));
       overlay.style.fontFamily = this._fontSans || "'Inter', sans-serif";
-      overlay.style.fontSize   = (this._fsBase  || 13) + 'px';
+      overlay.style.fontSize   = this._fsModalCss || ((this._fsBase || 14) + 'px');
       const box = document.createElement("div");
       box.style.cssText = "background:#111;border:1px solid #333;border-radius:14px;padding:22px 24px;max-width:360px;width:90%;color:#EDE0CC;font-size:1em;line-height:1.6;box-shadow:0 8px 32px rgba(0,0,0,0.6)";
       const p = document.createElement("p");
@@ -670,9 +684,9 @@ class MillesimeCard extends HTMLElement {
       .forEach(p => { if (themeVars[p]) overlay.style.setProperty(`--${p}`, themeVars[p]); });
     overlay.style.setProperty('--font-serif', this._fontSerif || "'Playfair Display', serif");
     overlay.style.setProperty('--font-sans',  this._fontSans  || "'Inter', sans-serif");
-    overlay.style.setProperty('--fs-base',    (this._fsBase   || 13) + 'px');
+    overlay.style.setProperty('--fs-base',    this._fsModalCss || ((this._fsBase || 14) + 'px'));
     overlay.style.fontFamily = this._fontSans || "'Inter', sans-serif";
-    overlay.style.fontSize   = (this._fsBase  || 13) + 'px';
+    overlay.style.fontSize   = this._fsModalCss || ((this._fsBase || 14) + 'px');
     const box = document.createElement("div");
     box.className = "mm-box";
 
@@ -2096,18 +2110,31 @@ class MillesimeCard extends HTMLElement {
     return `<style>:host{font-family:${ff};font-size:${fs}}</style>`;
   }
 
+  // card_mod-friendly : on écrit le contenu dans un conteneur stable (#mm-root) au
+  // lieu d'écraser tout le shadowRoot. Les <style> injectés par card_mod sont des
+  // FRÈRES de #mm-root → ils survivent à chaque re-rendu (plus de flash de style).
+  _writeRoot(html) {
+    let root = this.shadowRoot.getElementById("mm-root");
+    if (!root) {
+      root = document.createElement("div");
+      root.id = "mm-root";
+      this.shadowRoot.appendChild(root);
+    }
+    root.innerHTML = html;
+  }
+
   _renderLoading() {
-    this.shadowRoot.innerHTML = CARD_CSS + this._fontCSS() + `
+    this._writeRoot(CARD_CSS + this._fontCSS() + `
       <div class="card">
         <div class="loading-state"><div class="loading-glass">${GLASS_SVG}</div></div>
-      </div>`;
+      </div>`);
   }
 
   _render() {
     const data   = this._data || DEFAULT_DATA();
     const racks = data.cellar?.racks || [];
     const wines  = data.wines || [];
-    this.shadowRoot.innerHTML = CARD_CSS + this._fontCSS() + `
+    this._writeRoot(CARD_CSS + this._fontCSS() + `
       <div class="card">
         ${this._renderHeader(data, wines)}
         ${this._renderFilters()}
@@ -2121,7 +2148,7 @@ class MillesimeCard extends HTMLElement {
                     return racks.map((f, i) => this._renderRack(f, wines, i, maxCols)).join("");
                   })())}
         </div>
-      </div>`;
+      </div>`);
     this._bindCardListeners(data, wines);
     if (this._view === "3d") this._mount3D(); else this._unmount3D();
   }
@@ -3225,11 +3252,14 @@ class MillesimeCard extends HTMLElement {
           stage.appendChild(badge);
         }
 
-        // Rail vertical aligné sur le haut du casier
+        // Rail vertical au bord droit du casier (suit le centrage sur carte large
+        // au lieu de rester collé au bord du stage)
         const pr = toPx(halfW, yTop + 0.7, 0);
         const rail = document.createElement("div");
         rail.className = "t3-rail";
         rail.style.top = Math.max(4, pr.y - 50) + "px";
+        rail.style.left = Math.min(pr.x + 4, w - 40) + "px";
+        rail.style.right = "auto";
         rail.innerHTML = `
           <button class="icon-btn" data-edit-rack="${esc(rack.id)}" title="Modifier">⚙</button>
           <button class="icon-btn" data-move-rack="${esc(rack.id)}" title="Déplacer le contenu">📦</button>
@@ -3242,16 +3272,23 @@ class MillesimeCard extends HTMLElement {
     // ── Layout : la largeur dicte l'échelle, la hauteur suit le contenu ──
     let curW = 0;
     const RAIL_PX = 48;                        // zone réservée au rail d'actions
+    // Largeur de rendu PLAFONNÉE : au-delà, la scène ne s'étire plus (bouteilles
+    // géantes sur desktop) — on garde l'échelle de ~MAX_W px et on CENTRE le casier
+    // dans la largeur réelle. Sous MAX_W (mobile/colonne), marge = 0 → inchangé.
+    const MAX_W = 780;
     const layout = (w) => {
       curW = w;
-      const usable = Math.max(120, w - RAIL_PX);
+      const effW = Math.min(w, MAX_W);
+      const usable = Math.max(120, effW - RAIL_PX);
       const pxPerUnit = usable / (s3.x * MARGIN_X);
       const h = Math.max(150, Math.round((s3.y + PAD_TOP + PAD_BOT) * pxPerUnit));
       const hW = (s3.x * MARGIN_X) / 2;
       const extra = RAIL_PX / pxPerUnit;       // unités monde à droite (hors clayettes)
+      // Marge de centrage quand la carte dépasse MAX_W (sinon 0)
+      const margin = Math.max(0, (w - effW) / (2 * pxPerUnit));
       const hH = h / (2 * pxPerUnit);
       const cy = c3.y - (PAD_BOT - PAD_TOP) / 2;
-      cam.left = -hW; cam.right = hW + extra; cam.top = hH; cam.bottom = -hH;
+      cam.left = -(hW + margin); cam.right = hW + extra + margin; cam.top = hH; cam.bottom = -hH;
       // Cadrage d'origine : élévation ~16° + léger décalage latéral (vue 3/4 douce).
       // La projection orthographique garde toutes les bouteilles parallèles malgré
       // le décalage — pas de point de fuite par bouteille.
@@ -3706,6 +3743,9 @@ function _drow(label, value) {
 const CARD_CSS = `<style>
 :host {
   display: block; font-size: var(--fs-base, 13px);
+  /* Le responsive est piloté par la largeur de la CARTE (container query), pas du
+     viewport : une carte dans une colonne étroite se compacte même sur grand écran. */
+  container-type: inline-size; container-name: mm;
   --red:#C0392B; --red-h:#E74C3C; --gold:#C9A84C;
   --accent: var(--primary-color, #C0392B);
   --accent-h: var(--secondary-color, #E74C3C);
@@ -3725,15 +3765,17 @@ const CARD_CSS = `<style>
 }
 * { box-sizing:border-box; margin:0; padding:0; }
 
-.card { background:var(--bg-0); border-radius:18px; overflow:hidden; border:1px solid var(--border); }
+/* Base de police appliquée ici (descendant du conteneur :host) pour que le clamp
+   en cqi de --fs-base se mesure sur la largeur de la CARTE, pas du viewport. */
+.card { background:var(--bg-0); border-radius:18px; overflow:hidden; border:1px solid var(--border); font-size:var(--fs-base, 13px); }
 
 .loading-state { display:flex; align-items:center; justify-content:center; height:180px; }
 .loading-glass { width:36px; opacity:0.5; animation:pulse-anim 1.4s ease-in-out infinite; }
 @keyframes pulse-anim { 0%,100%{opacity:0.3} 50%{opacity:0.8} }
 
 .header {
-  display:flex; align-items:flex-start; gap:10px;
-  padding:12px 14px 10px;
+  display:flex; align-items:flex-start; gap:clamp(10px,1.5cqi,14px);
+  padding:clamp(12px,1.7cqi,16px) clamp(14px,2.4cqi,22px) clamp(10px,1.4cqi,13px);
   background:linear-gradient(160deg,color-mix(in srgb,var(--card-background-color,#111) 75%,var(--header-accent,#C0392B) 25%) 0%,var(--card-background-color,#111) 100%);
   border-bottom:1px solid var(--border); position:relative;
 }
@@ -3744,27 +3786,27 @@ const CARD_CSS = `<style>
 /* Logo + nom empilés à gauche */
 .header-left { display:flex; flex-direction:column; align-items:center; gap:4px; flex-shrink:0; padding-top:2px; }
 .header-glass {
-  width:28px;
+  width:clamp(28px,3.7cqi,34px);
   filter:drop-shadow(0 0 8px rgba(192,57,43,0.7));
   animation:float-anim 3s ease-in-out infinite;
 }
 @keyframes float-anim { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-3px)} }
 .header-meta { text-align:center; }
-.header-name { font-family:var(--font-serif); font-size:0.77em; color:var(--cream); line-height:1.2; }
-.header-tagline { font-size:0.54em; color:var(--red); text-transform:uppercase; letter-spacing:1.5px; margin-top:1px; }
+.header-name { font-family:var(--font-serif); font-size:clamp(0.77em,1.55cqi,0.98em); color:var(--cream); line-height:1.2; }
+.header-tagline { font-size:clamp(0.54em,1.05cqi,0.62em); color:var(--red); text-transform:uppercase; letter-spacing:1.5px; margin-top:1px; }
 /* Colonne droite : stats en haut, boutons en dessous */
 .header-right { display:flex; flex-direction:column; gap:7px; flex:1; min-width:0; }
 /* Stats et actions partagent la MÊME grille 3 colonnes → alignement parfait */
 .header-stats   { display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; align-items:stretch; }
 .header-actions { display:grid; grid-template-columns:2fr 1fr; gap:5px; align-items:stretch; }
-.stat { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:5px 6px; background:var(--bg-2); border-radius:8px; border:1px solid var(--border); }
-.stat-value { font-size:1.08em; font-weight:700; color:var(--cream); font-family:var(--font-serif); line-height:1; }
-.stat-label { font-size:0.54em; color:var(--muted); text-transform:uppercase; letter-spacing:1px; margin-top:2px; }
+.stat { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:clamp(5px,0.9cqi,8px) clamp(6px,1.2cqi,11px); background:var(--bg-2); border-radius:8px; border:1px solid var(--border); }
+.stat-value { font-size:clamp(1.08em,2.2cqi,1.34em); font-weight:700; color:var(--cream); font-family:var(--font-serif); line-height:1; }
+.stat-label { font-size:clamp(0.54em,1.1cqi,0.66em); color:var(--muted); text-transform:uppercase; letter-spacing:1px; margin-top:2px; }
 .stat-clickable { cursor:pointer; transition:all 0.15s; }
 .stat-clickable:hover { background:var(--bg-3); border-color:var(--header-accent,var(--red)); }
 .stat-clickable:active { transform:scale(0.97); }
 /* La rangée d'icônes (vue + 🔍 + 📓) occupe la colonne "Bouteilles" */
-.ha-icons { display:flex; gap:5px; }
+.ha-icons { display:flex; gap:clamp(5px,1cqi,7px); }
 .ha-icons .btn-icon, .ha-icons .view-select { flex:1; min-width:0; }
 .header-actions > .btn-secondary,
 .header-actions > .btn-primary { width:100%; }
@@ -3781,8 +3823,8 @@ const CARD_CSS = `<style>
 }
 .opt-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .opt-btn {
-  padding:7px 12px; border-radius:8px; border:1px solid var(--border);
-  background:var(--bg-2); color:var(--cream); font-size:0.78em; font-weight:600;
+  padding:clamp(7px,1.2cqi,9px) clamp(12px,2cqi,14px); border-radius:8px; border:1px solid var(--border);
+  background:var(--bg-2); color:var(--cream); font-size:clamp(0.78em,1.5cqi,0.88em); font-weight:600;
   cursor:pointer; transition:all 0.15s; white-space:nowrap; flex:1; min-width:140px;
 }
 .opt-btn:hover { background:var(--bg-3); border-color:var(--header-accent,var(--red)); }
@@ -3797,8 +3839,8 @@ const CARD_CSS = `<style>
 }
 .header-glass.active { filter:drop-shadow(0 0 11px rgba(192,57,43,1)); transform:scale(1.08); }
 .btn-primary, .btn-secondary {
-  padding:7px 12px; border-radius:8px; border:none;
-  font-family:var(--font-sans); font-size:0.85em; font-weight:600;
+  padding:clamp(7px,1.2cqi,9px) clamp(12px,2cqi,15px); border-radius:8px; border:none;
+  font-family:var(--font-sans); font-size:clamp(0.85em,1.6cqi,0.95em); font-weight:600;
   cursor:pointer; transition:all 0.15s; white-space:nowrap;
 }
 .btn-primary { background:var(--accent); color:#fff; }
@@ -3807,32 +3849,32 @@ const CARD_CSS = `<style>
 .btn-secondary:hover { background:var(--bg-4); }
 
 .btn-icon {
-  padding:0; min-width:32px; border-radius:8px;
+  padding:0; min-width:clamp(32px,5cqi,40px); border-radius:8px;
   border:1px solid var(--border); background:var(--bg-2);
-  color:var(--cream); font-size:1.08em; cursor:pointer; transition:all 0.15s;
+  color:var(--cream); font-size:clamp(1.08em,2.1cqi,1.25em); cursor:pointer; transition:all 0.15s;
 }
 .btn-icon:hover { background:var(--bg-3); }
 .view-select {
   flex:1.8; min-width:0; padding:0 4px; border-radius:8px;
   border:1px solid var(--border); background:var(--bg-2);
-  color:var(--cream); font-family:var(--font-sans); font-size:0.8em;
+  color:var(--cream); font-family:var(--font-sans); font-size:clamp(0.8em,1.6cqi,0.95em);
   cursor:pointer; transition:all 0.15s;
 }
 .view-select:hover { background:var(--bg-3); }
 
 .filters {
-  display:flex; gap:10px; padding:8px 14px;
+  display:flex; gap:clamp(8px,1.5cqi,14px); padding:clamp(8px,1.5cqi,11px) clamp(14px,2.4cqi,22px);
   background:var(--bg-1); border-bottom:1px solid var(--border);
 }
 .filter-group { display:flex; flex-direction:column; gap:4px; flex:1; }
 .filter-label {
-  font-size:0.69em; color:var(--muted); text-transform:uppercase;
+  font-size:clamp(0.69em,1.3cqi,0.8em); color:var(--muted); text-transform:uppercase;
   letter-spacing:1.5px; text-align:center;
 }
 .filter-select {
   width:100%; padding:6px 28px 6px 10px; border-radius:8px;
   border:1px solid var(--border); background:var(--bg-2);
-  color:var(--cream); font-family:var(--font-sans); font-size:0.92em;
+  color:var(--cream); font-family:var(--font-sans); font-size:clamp(0.92em,1.7cqi,1.02em);
   cursor:pointer; outline:none; -webkit-appearance:none; appearance:none;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%235A5A5A'/%3E%3C/svg%3E");
   background-repeat:no-repeat; background-position:right 10px center;
@@ -3953,8 +3995,9 @@ const CARD_CSS = `<style>
   flex:1;
 }
 
-/* ─── Responsive mobile ─── */
-@media (max-width: 500px) {
+/* ─── Responsive : container queries (largeur de la CARTE, pas du viewport) ─── */
+/* Palier « étroit » : carte compacte (téléphone plein écran, demi-colonne…) */
+@container mm (max-width: 500px) {
   .cellar { padding:6px 5px; }
   .rack-frame { padding:4px 5px; }
   .rack-dots { gap:2px !important; grid-auto-rows:auto !important; }
@@ -3972,6 +4015,28 @@ const CARD_CSS = `<style>
   .filter-select { font-size:0.85em; min-height:30px; padding:4px 24px 4px 8px; }
   .rack-label { font-size:0.54em; letter-spacing:1px; padding:3px 8px; }
 }
+/* Palier « très étroit » : petits téléphones / colonnes serrées */
+@container mm (max-width: 360px) {
+  .cellar { padding:5px 4px; }
+  .header { padding:6px 7px 5px; gap:5px; }
+  .header-tagline { display:none; }            /* gain de hauteur, le nom suffit */
+  .header-glass { width:20px; }
+  .header-name { font-size:0.62em; }
+  .stat-value { font-size:0.82em; }
+  .stat-label { font-size:0.5em; }
+  .stat { padding:3px; }
+  .ha-icons { gap:3px; }
+  .btn-icon { min-width:28px; font-size:1em; }
+  .btn-primary, .btn-secondary { font-size:0.72em; padding:5px; }
+  .dot { height:42px !important; }
+  .dot-svg-b { height:42px !important; }
+  .filters { padding:6px 8px; gap:6px; }
+  .opt-btn { min-width:0; font-size:0.72em; padding:6px 8px; }   /* laisse rétrécir/empiler */
+  .opt-field { min-width:0; }
+}
+/* Transitions douces : l'en-tête, les filtres et les boutons grandissent en
+   continu avec la largeur de la carte via clamp(em, …cqi, em) sur les règles de
+   base — plus de palier-saut « large », et les bornes em respectent font_size. */
 </style>`;
 
 // ── CSS du modal ────────────────────────────────────────────────────────────────
