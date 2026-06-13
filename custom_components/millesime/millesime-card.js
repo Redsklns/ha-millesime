@@ -41,6 +41,15 @@ const ERROR_MESSAGES = {
 
 const esc = s => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const safeUrl = url => /^https?:\/\//i.test(url ?? "") ? url : "#";
+// Mobile/tactile : sur ces appareils on ouvre DIRECTEMENT l'appareil photo (caméra
+// arrière) via l'attribut `capture`. Sur desktop, on laisse le sélecteur de fichier
+// classique (capture ignoré/indésirable). Détection volontairement conservatrice.
+const _isMobile = () => {
+  try {
+    return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || "")
+      || ((navigator.maxTouchPoints || 0) > 0 && matchMedia("(pointer: coarse)").matches);
+  } catch (e) { return false; }
+};
 
 // Profils de bouteilles [rayon, hauteur] — SOURCE UNIQUE des deux vues : la 3D
 // les tourne (LatheGeometry), la 2D les projette à plat (silhouette SVG). Par type :
@@ -96,7 +105,7 @@ const BOTTLE_PROFILES = {
     [0.00, 3.72],
   ],
 };
-const TYPE_SHAPE = { red: "bourgogne", white: "bordeaux", rose: "rose", sparkling: "champagne", dessert: "bordeaux" };
+const TYPE_SHAPE = { red: "bourgogne", white: "flute", rose: "rose", sparkling: "champagne", dessert: "loire" };
 
 // Rayon de fût COMMUN : toutes les bouteilles ont le même diamètre max — l'espacement
 // entre deux bouteilles est donc constant, quel que soit leur sens (tête-bêche ou non).
@@ -308,6 +317,16 @@ const GLASS_SVG = `<svg viewBox="0 0 40 56" xmlns="http://www.w3.org/2000/svg">
   <rect x="18.5" y="30" width="3" height="17" rx="1.5" fill="#7B241C"/>
   <ellipse cx="20" cy="48" rx="8" ry="2.2" fill="#6E2118"/>
 </svg>`;
+
+// ── Ombres de la vue 3D : deux implémentations conservées, au choix ───────────
+// false (DÉFAUT, ACTIF) : ombre de CONTACT — un halo radial léger posé sous chaque
+//   bouteille. Quasi gratuit en GPU (recommandé, surtout mobile/WebView).
+// true  (INACTIF)        : ombres PCF PROJETÉES — vraie shadow map 2048² (bouteilles,
+//   planches, cadre, ombres inter-étagères, directionnelles). Plus réaliste mais
+//   lourd : c'est ce qui saturait le contexte WebGL (pertes de contexte / crash).
+// Le code des DEUX modes est présent ci-dessous, gardé par cette constante :
+// passer à `true` réactive intégralement les ombres PCF, sans rien réécrire.
+const SHADOWS_3D_PCF = false;
 
 // ── Classe principale ──────────────────────────────────────────────────────────
 
@@ -737,7 +756,7 @@ class MillesimeCard extends HTMLElement {
           </div>
           <div class="mm-field">
             <label class="mm-label">Étagères</label>
-            <input class="mm-input" id="fl-shelves" type="number" value="${rack?.shelves || 2}" min="1" max="20">
+            <input class="mm-input" id="fl-shelves" type="number" value="${rack?.shelves || 2}" min="1" max="10">
           </div>
         </div>
         <div class="mm-field">
@@ -841,7 +860,7 @@ class MillesimeCard extends HTMLElement {
                 value="${esc(b.name || "")}">
             </div>
             <button class="mm-btn-photo" id="btn-photo" title="Scanner l'étiquette">📷</button>
-            <input type="file" id="photo-input" accept="image/*" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;overflow:hidden">
+            <input type="file" id="photo-input" accept="image/*" ${_isMobile() ? 'capture="environment"' : ''} style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;overflow:hidden">
           </div>
           <div id="search-banner"></div>
           <div id="viv-results" class="mm-viv-results"></div>
@@ -2417,7 +2436,10 @@ class MillesimeCard extends HTMLElement {
     if (!t) return;
     try {
       t.ro?.disconnect();
+      window.removeEventListener("orientationchange", t.onOrient);
       const el = t.renderer.domElement;
+      el.removeEventListener("webglcontextlost", t.onCtxLost);
+      el.removeEventListener("webglcontextrestored", t.onCtxRestored);
       el.removeEventListener("click", t.onPick);
       el.removeEventListener("pointerdown", t.onDown);
       el.removeEventListener("pointermove", t.onMove);
@@ -2426,11 +2448,19 @@ class MillesimeCard extends HTMLElement {
       t.scene.traverse((o) => {
         o.geometry?.dispose?.();
         if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => {
-          m.map?.dispose?.();
+          // Libérer TOUTES les textures du matériau (pas seulement .map) : envMap,
+          // bumpMap, etc. sinon elles fuient d'un montage à l'autre.
+          for (const v of Object.values(m)) v?.isTexture && v.dispose?.();
           m.dispose();
         });
       });
       t.renderer.dispose();
+      // Libérer IMMÉDIATEMENT le contexte WebGL. Sans ça, dispose() seul laisse le
+      // contexte vivant jusqu'au GC : les remontages (rotation/reconnexion) les
+      // accumulent, le navigateur tue les plus anciens (limite ~16 contextes) et
+      // crache des "GL_INVALID_OPERATION / Texture is immutable". Les écouteurs
+      // contextlost/restored ont été retirés ci-dessus → pas de boucle de remontage.
+      t.renderer.forceContextLoss?.();
       el.remove();
     } catch (e) { /* noop */ }
     this._three = null;
@@ -2487,6 +2517,12 @@ class MillesimeCard extends HTMLElement {
     scene.add(new THREE.AmbientLight(0xfff4e0, 0.55));
     const key = new THREE.DirectionalLight(0xffffff, 1.35);
     key.position.set(5, 12, 9);
+    if (SHADOWS_3D_PCF) {                       // PCF projeté — inactif par défaut
+      key.castShadow = true;
+      key.shadow.mapSize.set(2048, 2048);
+      key.shadow.bias = -0.0004;
+      key.shadow.radius = 5;
+    }
     scene.add(key);
     const fill = new THREE.DirectionalLight(0xc9d4ff, 0.35);
     fill.position.set(-6, 4, 5);
@@ -2603,8 +2639,10 @@ class MillesimeCard extends HTMLElement {
         .concat([...ghostPts].reverse().map(([r, y]) => new THREE.Vector3(-r, 0, -(1.86 - y))))
     );
 
-    // ── Ombre de contact : halo doux posé sur la planche, sous chaque bouteille.
-    //    Remplace les ombres projetées PCF (plus d'ombre d'une étagère sur l'autre).
+    // ── Ombre de contact (MODE ACTIF, SHADOWS_3D_PCF=false) : halo doux posé sur
+    //    la planche, sous chaque bouteille. Léger ; pas d'ombre d'une étagère sur
+    //    l'autre. Le matériau/géométrie sont créés ici, le mesh par bouteille n'est
+    //    ajouté que si le mode PCF est désactivé (voir plus bas).
     const _shCv = document.createElement("canvas");
     _shCv.width = _shCv.height = 128;
     const _shx = _shCv.getContext("2d");
@@ -2948,6 +2986,7 @@ class MillesimeCard extends HTMLElement {
           isIron ? ironMat : [wm.side, wm.side, wm.top, wm.side, wm.side, wm.side]
         );
         plank.position.set(0, shelfY - (isIron ? 0.05 : PLANK_H / 2), 0);
+        if (SHADOWS_3D_PCF) { plank.receiveShadow = true; plank.castShadow = true; }
         scene.add(plank);
 
         if (isIron) {
@@ -2955,6 +2994,7 @@ class MillesimeCard extends HTMLElement {
           const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, plankW - 0.2, 10), ironMat);
           rail.rotation.z = Math.PI / 2;
           rail.position.set(0, shelfY - 0.17, 1.92);
+          if (SHADOWS_3D_PCF) rail.castShadow = true;
           scene.add(rail);
         }
 
@@ -3011,6 +3051,7 @@ class MillesimeCard extends HTMLElement {
           const set = geoByType[tp] || setBordeaux;
           const g = new THREE.Group();
           const body = new THREE.Mesh(set.body, filtered ? fadedMats[tp] : mats[tp]);
+          if (SHADOWS_3D_PCF) { body.castShadow = !filtered; body.receiveShadow = true; }
           const cap  = new THREE.Mesh(set.cap, capMats[tp]);
           // Tête du champignon en liège : la couronne autour de la plaque (fût évasé
           // + bord de la calotte) est en liège apparent, seul le centre est couvert
@@ -3023,7 +3064,7 @@ class MillesimeCard extends HTMLElement {
           const lblMat = labelMatFor(tp, wine.name) || labelMat;
           const lbl  = new THREE.Mesh(set.label, lblMat);
           cap.visible = cork.visible = col.visible = lbl.visible = !filtered;
-          if (!filtered) {
+          if (!filtered && !SHADOWS_3D_PCF) {        // ombre de contact (mode actif)
             const csh = new THREE.Mesh(contactGeo, contactMat);
             csh.position.set(x, shelfY + 0.011, stag);
             scene.add(csh);
@@ -3115,6 +3156,7 @@ class MillesimeCard extends HTMLElement {
         const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), frameMat);
         if (rotX) m.rotation.x = rotX;
         m.position.set(x, y, z);
+        if (SHADOWS_3D_PCF) m.castShadow = m.receiveShadow = true;
         scene.add(m);
       };
       const px = plankW / 2 - 0.07, pz = 2.0 - 0.07, yMid = (frTop + frBot) / 2;
@@ -3125,10 +3167,12 @@ class MillesimeCard extends HTMLElement {
           for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
             const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, frH, 10), ironMat);
             post.position.set(sx * px, yMid, sz * pz);
+            if (SHADOWS_3D_PCF) post.castShadow = post.receiveShadow = true;
             scene.add(post);
             if (!st.roof) {
               const ball = new THREE.Mesh(new THREE.SphereGeometry(0.085, 12, 10), ironMat);
               ball.position.set(sx * px, frTop + 0.07, sz * pz);
+              if (SHADOWS_3D_PCF) ball.castShadow = true;
               scene.add(ball);
             }
           }
@@ -3182,16 +3226,28 @@ class MillesimeCard extends HTMLElement {
     const MARGIN_X = 1.03;
     const PAD_TOP = 0.45, PAD_BOT = 0.95;     // marges monde (bas = place du badge)
 
-    // Ombres : couvrir toute la scène
+    // Lumière clé : viser le centre de la scène. En mode contact (défaut) il n'y a
+    // pas de shadow map ; en mode PCF on cadre la shadow camera sur toute la scène.
     key.target.position.copy(c3);
     scene.add(key.target);
     key.position.set(c3.x + 5, c3.y + s3.y / 2 + 8, c3.z + 9);
+    if (SHADOWS_3D_PCF) {                       // cadrage de la shadow map — inactif par défaut
+      const sc = key.shadow.camera;
+      sc.left = -(s3.x / 2 + 3); sc.right = s3.x / 2 + 3;
+      sc.top  =  s3.y / 2 + 4;   sc.bottom = -(s3.y / 2 + 4);
+      sc.near = 1; sc.far = 90;
+      sc.updateProjectionMatrix();
+    }
 
     const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
 
     // ── Renderer HD ──
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    if (SHADOWS_3D_PCF) {                       // shadow map PCF — inactif par défaut
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.12;
@@ -3200,7 +3256,16 @@ class MillesimeCard extends HTMLElement {
     stage.appendChild(renderer.domElement);
     renderer.domElement.style.cssText = "display:block;width:100%;height:100%;border-radius:12px;touch-action:pan-y";
 
-    const draw = () => renderer.render(scene, cam);
+    const glCtx = renderer.getContext();
+    const draw = () => {
+      // Ne JAMAIS appeler render() sur un contexte perdu : three lit alors
+      // gl.getProgramInfoLog() == null et plante sur `null.trim()` (visible via
+      // le chemin PMREM de génération de l'env-map au premier rendu). Un contexte
+      // peut sauter entre deux remontages (rotation/reconnexion) ; on saute le
+      // rendu, le remontage suivant reconstruira une scène saine.
+      if (glCtx.isContextLost?.()) return;
+      renderer.render(scene, cam);
+    };
 
     // ── Overlays : badge sous chaque clayette + rail vertical à droite ──
     const placeOverlays = (w, h) => {
@@ -3446,7 +3511,32 @@ class MillesimeCard extends HTMLElement {
     });
     ro.observe(stage);
 
-    this._three = { renderer, scene, cam, ro, onPick, onDown, onMove, onUp, onCancel };
+    // ── Mobile : bascule d'orientation ──
+    // 1) La WebView peut perdre le contexte WebGL au changement d'orientation.
+    //    Sans preventDefault sur "webglcontextlost", le navigateur ne restaure
+    //    JAMAIS le contexte : le canvas reste vide définitivement. On accepte la
+    //    restauration puis on remonte toute la scène (les ressources GPU —
+    //    textures, géométries, framebuffers — sont invalidées par la perte).
+    const canvas = renderer.domElement;
+    const onCtxLost     = (e) => e.preventDefault();
+    const onCtxRestored = () => {
+      if (this._view === "3d") requestAnimationFrame(() => this._mount3D());
+    };
+    canvas.addEventListener("webglcontextlost", onCtxLost, false);
+    canvas.addEventListener("webglcontextrestored", onCtxRestored, false);
+    // 2) Certaines WebView Android vident le back-buffer SANS émettre
+    //    "webglcontextlost" : on remesure et on redessine une fois la nouvelle
+    //    taille stabilisée (double rAF). Couvre aussi le cas où la largeur reste
+    //    identique (le ResizeObserver ne se déclencherait alors pas).
+    const onOrient = () => requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (this._view !== "3d" || !this._three) return;
+        const w = stage.clientWidth || curW;
+        if (w > 0 && Math.abs(w - curW) > 1) layout(w); else draw();
+      }));
+    window.addEventListener("orientationchange", onOrient);
+
+    this._three = { renderer, scene, cam, ro, canvas, onCtxLost, onCtxRestored, onOrient, onPick, onDown, onMove, onUp, onCancel };
   }
 
   _bind3DOverlays(stage, data, wines) {
@@ -3681,8 +3771,24 @@ class MillesimeCard extends HTMLElement {
     });
   }
 
+  connectedCallback() {
+    // HA ré-attache la carte quand il recalcule sa disposition (rotation de
+    // l'écran, resize masonry/sections…) : il appelle disconnectedCallback puis
+    // reconnecte la MÊME instance sans rappeler setConfig, et `set hass` ne
+    // re-rend pas (first=false). Sans ce hook, la vue 3D resterait démontée et
+    // la carte ne recevrait plus aucune mise à jour → contenu vide jusqu'à un
+    // rechargement manuel (F5). On restaure souscription + rendu.
+    if (!this._disconnected || !this._hass) return;   // 1er montage : set hass s'en charge
+    this._disconnected = false;
+    if (!this._unsubs.length) this._subscribeUpdates();
+    if (this._data) this._render();                   // restauration immédiate (re-montage 3D inclus)
+    else this._fetchData();
+  }
+
   disconnectedCallback() {
+    this._disconnected = true;
     this._unsubs.forEach((f) => f());
+    this._unsubs = [];
     this._closeModal();
     this._unmount3D();
     document.querySelector("#mm-toast-css")?.remove();
@@ -4225,7 +4331,12 @@ console.info(
   "background:#2A2A2A;color:#C9A84C;font-weight:700;border-radius:0 3px 3px 0;padding:2px 0"
 );
 
-customElements.define("millesime-card", MillesimeCard);
+// Garde anti-double-définition : la carte est désormais auto-enregistrée par
+// l'intégration. Si une ancienne ressource Lovelace manuelle (/local/…) coexiste
+// encore, le second chargement échouerait sur "already defined" — on l'évite.
+if (!customElements.get("millesime-card")) {
+  customElements.define("millesime-card", MillesimeCard);
+}
 
 window.customCards = window.customCards || [];
 window.customCards.push({

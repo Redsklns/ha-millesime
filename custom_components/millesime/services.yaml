@@ -1,50 +1,56 @@
-add_floor:
-  name: Ajouter un étage
-  description: Ajoute un étage à la cave.
+add_rack:
+  name: Ajouter un casier
+  description: Ajoute un casier à la cave. (add_floor reste accepté en alias déprécié, ainsi que rows pour shelves.)
   fields:
     name:
-      description: Nom de l'étage
+      description: Nom du casier
       example: "Bordeaux"
     columns:
       description: Nombre de colonnes
       example: 8
-    rows:
-      description: Nombre de rangées
+    shelves:
+      description: Nombre d'étagères
       example: 2
     layout:
       description: "Disposition : side_by_side ou alternating"
       example: "side_by_side"
+    style:
+      description: "Apparence (objet) : material (chene|noyer|merisier|grise|wenge|fer), posts/feet/cross_braces/roof (booléens), accent (couleur CSS). Clés absentes = automatique."
+      example: '{"material": "fer", "roof": true}'
 
-update_floor:
-  name: Modifier un étage
-  description: Modifie un étage existant.
+update_rack:
+  name: Modifier un casier
+  description: Modifie un casier existant. (update_floor, floor_id et rows restent acceptés en alias dépréciés.)
   fields:
-    floor_id:
-      description: ID de l'étage
+    rack_id:
+      description: ID du casier
       required: true
     name:
       description: Nouveau nom
     columns:
       description: Nombre de colonnes
-    rows:
-      description: Nombre de rangées
+    shelves:
+      description: Nombre d'étagères
     layout:
       description: Disposition
+    style:
+      description: "Apparence (objet) : material (chene|noyer|merisier|grise|wenge|fer), posts/feet/cross_braces/roof (booléens), accent (couleur CSS). Objet vide = retour au style automatique."
+      example: '{"material": "noyer", "feet": true}'
 
-remove_floor:
-  name: Supprimer un étage
-  description: Supprime un étage et ses bouteilles.
+remove_rack:
+  name: Supprimer un casier
+  description: Supprime un casier et ses bouteilles. (remove_floor et floor_id restent acceptés en alias dépréciés.)
   fields:
-    floor_id:
-      description: ID de l'étage
+    rack_id:
+      description: ID du casier
       required: true
 
 add_bottle:
   name: Ajouter une bouteille
   description: Ajoute une bouteille à la cave.
   fields:
-    floor_id:
-      description: ID de l'étage
+    rack_id:
+      description: ID du casier
       required: true
     slot:
       description: Numéro d'emplacement
@@ -94,6 +100,10 @@ update_bottle:
     bottle_id:
       description: ID de la bouteille
       required: true
+    rack_id:
+      description: ID du casier de destination (déplacement)
+    slot:
+      description: Numéro d'emplacement de destination (déplacement)
     name:
       description: Nom du vin
     vintage:
@@ -154,8 +164,8 @@ duplicate_bottle:
     bottle_id:
       description: ID de la bouteille source
       required: true
-    floor_id:
-      description: ID de l'étage de destination
+    rack_id:
+      description: ID du casier de destination
     slot:
       description: Emplacement de destination
 
@@ -164,13 +174,111 @@ value_snapshot:
   description: Enregistre la valeur actuelle de la cave dans l'historique.
   fields: {}
 
+add_wine:
+  name: Ajouter un vin
+  description: Crée un vin avec un premier emplacement. Mêmes champs qu'add_bottle (sans quantity).
+  fields:
+    rack_id:
+      description: ID du casier
+      required: true
+    slot:
+      description: Numéro d'emplacement
+      required: true
+    name:
+      description: Nom du vin
+      required: true
+    size:
+      description: "Format de la bouteille (défaut : 75cl ; ex. : 150cl)"
+    favorite:
+      description: Coup de cœur (booléen)
+    slot_comment:
+      description: Commentaire propre à cette bouteille (emplacement)
+    added_date:
+      description: Date d'ajout (YYYY-MM-DD, défaut aujourd'hui)
+
+update_wine:
+  name: Modifier un vin
+  description: Met à jour les métadonnées d'un vin (tous ses emplacements).
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+
+remove_wine:
+  name: Supprimer un vin
+  description: Supprime un vin et tous ses emplacements.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+
+add_slot:
+  name: Ajouter un emplacement
+  description: Ajoute un emplacement (exemplaire) à un vin existant.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+    rack_id:
+      description: ID du casier
+      required: true
+    slot:
+      description: Numéro d'emplacement
+      required: true
+    comment:
+      description: Commentaire propre à cette bouteille
+    size:
+      description: "Format propre à cette bouteille (sinon celui du vin ; ex. : 150cl)"
+
+update_slot:
+  name: Modifier une bouteille
+  description: Met à jour le format et/ou le commentaire d'une bouteille (emplacement) sans la déplacer. Champ vidé → retour à la valeur du vin.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+    slot_idx:
+      description: Index de l'emplacement (0 = premier)
+    size:
+      description: Format de cette bouteille (ex. 150cl)
+    comment:
+      description: Commentaire de cette bouteille
+
+move_slot:
+  name: Déplacer un emplacement
+  description: Déplace un emplacement d'un vin vers une nouvelle position.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+    slot_idx:
+      description: Index de l'emplacement à déplacer (0 = premier)
+    rack_id:
+      description: ID du casier de destination
+      required: true
+    slot:
+      description: Numéro d'emplacement de destination
+      required: true
+
+remove_slot:
+  name: Retirer un emplacement
+  description: Retire un emplacement d'un vin. Supprime le vin si c'était le dernier.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+    slot_idx:
+      description: Index de l'emplacement à retirer (0 = premier)
+
 drink_bottle:
   name: Marquer comme bue
-  description: Retire une bouteille de la cave et l'ajoute au journal de dégustation.
+  description: Retire un emplacement de la cave et archive le vin au journal de dégustation.
   fields:
-    bottle_id:
-      description: ID de la bouteille
+    wine_id:
+      description: ID du vin (bottle_id accepté en alias)
       required: true
+    slot_idx:
+      description: Index de l'emplacement bu (0 = premier)
     rating:
       description: Note personnelle /5
     comment:
@@ -185,3 +293,25 @@ delete_tasting:
     tasting_id:
       description: ID de l'entrée du journal
       required: true
+
+refresh_wines:
+  name: Rafraîchir les fiches (Gemini)
+  description: >-
+    Fusionne les vins en doublon (même nom, millésime et type — les emplacements
+    sont regroupés), puis complète les champs vides de chaque fiche via Gemini
+    (fallback Open Food Facts). Les données déjà saisies ne sont jamais écrasées,
+    sauf le prix si update_prices est activé.
+  fields:
+    update_prices:
+      description: Mettre à jour le prix de chaque vin avec le prix moyen constaté par Gemini (écrase le prix existant). Désactivé par défaut.
+      example: true
+
+import_vinotag:
+  name: Importer une cave Vinotag
+  description: >-
+    Importe le fichier millesime_import_vinotag.csv (export CSV Vinotag) depuis le
+    dossier de configuration de Home Assistant. Les bouteilles sont placées
+    automatiquement dans les premiers emplacements libres (un casier « Import » est
+    créé si la capacité manque), le prix retenu est la valeur actuelle, et le
+    fichier est effacé après un import réussi.
+  fields: {}
