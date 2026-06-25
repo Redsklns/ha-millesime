@@ -19,7 +19,7 @@ async def async_setup_entry(
     async_add_entities([
         MillesimeBottlesSensor(hass, entry, entry_data),
         MillesimeValueSensor(hass, entry, entry_data),
-        MillesimeFloorsSensor(hass, entry, entry_data),
+        MillesimeRacksSensor(hass, entry, entry_data),
     ], True)
 
 
@@ -67,17 +67,17 @@ class MillesimeBottlesSensor(MillesimeBaseSensor):
 
     @property
     def native_value(self) -> int:
-        return sum(b.get("quantity", 1) for b in self._data.get("bottles", []))
+        return sum(len(w.get("slots", [])) for w in self._data.get("wines", []))
 
     @property
     def extra_state_attributes(self) -> dict:
         by_type: dict = {}
-        for b in self._data.get("bottles", []):
-            t = b.get("type", "red")
-            by_type[t] = by_type.get(t, 0) + b.get("quantity", 1)
+        for w in self._data.get("wines", []):
+            t = w.get("type", "red")
+            by_type[t] = by_type.get(t, 0) + len(w.get("slots", []))
         return {
-            "par_type": by_type,
-            "references": len(self._data.get("bottles", [])),
+            "par_type":   by_type,
+            "references": len(self._data.get("wines", [])),
         }
 
 
@@ -96,24 +96,25 @@ class MillesimeValueSensor(MillesimeBaseSensor):
     def native_value(self) -> float:
         return round(
             sum(
-                b.get("price", 0) * b.get("quantity", 1)
-                for b in self._data.get("bottles", [])
+                w.get("price", 0) * len(w.get("slots", []))
+                for w in self._data.get("wines", [])
             ),
             2,
         )
 
 
-class MillesimeFloorsSensor(MillesimeBaseSensor):
-    """Nombre d'étages."""
+class MillesimeRacksSensor(MillesimeBaseSensor):
+    """Nombre de casiers."""
 
     _attr_icon = "mdi:layers"
-    _attr_native_unit_of_measurement = "étages"
+    _attr_native_unit_of_measurement = "casiers"
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        # unique_id historique — ne pas changer, sinon l'entité existante est orpheline
         self._attr_unique_id = f"{DOMAIN}_floors"
-        self._attr_name = "Millésime Étages"
+        self._attr_name = "Millésime Casiers"
 
     @property
     def native_value(self) -> int:
-        return len(self._data.get("cellar", {}).get("floors", []))
+        return len(self._data.get("cellar", {}).get("racks", []))

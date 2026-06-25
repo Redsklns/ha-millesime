@@ -1286,6 +1286,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 break
         await _persist(d)
 
+    async def svc_swap_slots(call: ServiceCall) -> None:
+        """Permute DEUX emplacements occupés (échange de position). Atomique : ne
+        nécessite AUCUN emplacement libre → fonctionne même cave pleine."""
+        d = _get()
+        wa = call.data["wine_id_a"]; ia = int(call.data.get("slot_idx_a", 0))
+        wb = call.data["wine_id_b"]; ib = int(call.data.get("slot_idx_b", 0))
+        sa = sb = None
+        for w in d["wines"]:
+            if w["id"] == wa and ia < len(w.get("slots", [])):
+                sa = w["slots"][ia]
+            if w["id"] == wb and ib < len(w.get("slots", [])):
+                sb = w["slots"][ib]
+        if sa is None or sb is None:
+            raise HomeAssistantError("Emplacement introuvable pour la permutation.")
+        if sa is sb:
+            return  # même emplacement : rien à faire
+        # Échange uniquement la POSITION (casier + numéro) ; le format/commentaire
+        # propres à chaque bouteille restent sur leur bouteille.
+        sa["rack_id"], sb["rack_id"] = sb["rack_id"], sa["rack_id"]
+        sa["slot"], sb["slot"] = sb["slot"], sa["slot"]
+        await _persist(d)
+
     async def svc_remove_slot(call: ServiceCall) -> None:
         """Supprime un emplacement. Supprime le vin si c'était le dernier."""
         d = _get()
@@ -1610,6 +1632,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "update_wine",       svc_update_wine)
     hass.services.async_register(DOMAIN, "add_slot",          svc_add_slot)
     hass.services.async_register(DOMAIN, "move_slot",         svc_move_slot)
+    hass.services.async_register(DOMAIN, "swap_slots",        svc_swap_slots)
     hass.services.async_register(DOMAIN, "remove_slot",       svc_remove_slot)
     hass.services.async_register(DOMAIN, "update_slot",       svc_update_slot)
     hass.services.async_register(DOMAIN, "remove_wine",       svc_remove_wine)

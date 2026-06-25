@@ -260,6 +260,15 @@ const ERROR_MESSAGES = {
 
 const esc = s => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const safeUrl = url => /^https?:\/\//i.test(url ?? "") ? url : "#";
+// Mobile/tactile : sur ces appareils on ouvre DIRECTEMENT l'appareil photo (caméra
+// arrière) via l'attribut `capture`. Sur desktop, on laisse le sélecteur de fichier
+// classique (capture ignoré/indésirable). Détection volontairement conservatrice.
+const _isMobile = () => {
+  try {
+    return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || "")
+      || ((navigator.maxTouchPoints || 0) > 0 && matchMedia("(pointer: coarse)").matches);
+  } catch (e) { return false; }
+};
 
 // Profils de bouteilles [rayon, hauteur] — SOURCE UNIQUE des deux vues : la 3D
 // les tourne (LatheGeometry), la 2D les projette à plat (silhouette SVG). Par type :
@@ -315,7 +324,7 @@ const BOTTLE_PROFILES = {
     [0.00, 3.72],
   ],
 };
-const TYPE_SHAPE = { red: "bourgogne", white: "bordeaux", rose: "rose", sparkling: "champagne", dessert: "bordeaux" };
+const TYPE_SHAPE = { red: "bourgogne", white: "flute", rose: "rose", sparkling: "champagne", dessert: "loire" };
 
 // Rayon de fût COMMUN : toutes les bouteilles ont le même diamètre max — l'espacement
 // entre deux bouteilles est donc constant, quel que soit leur sens (tête-bêche ou non).
@@ -457,7 +466,7 @@ const BOTTLE_MINI = (color, w = null, type = "red", flipped = false, size = null
   const lblY = f(shBot + (22.5 - shBot) * 0.40);   // étiquette sur le bas du fût
   const lblH = 4.3, lblX = f(bL + 0.55), lblW = f(bw * 2 - 1.1);
   const colY = f(shTop - 1.45);                    // collerette juste au-dessus de l'épaule
-  return `<svg class="dot-svg-b" viewBox="0 0 10 26" xmlns="http://www.w3.org/2000/svg" style="${w ? `width:${w}px;height:${Math.round(w * 2.6)}px` : 'width:100%;height:auto'};display:block;${tf}">
+  return `<svg class="dot-svg-b" viewBox="0 0 10 26" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMax meet" style="${w ? `width:${w}px;height:${Math.round(w * 2.6)}px` : 'width:100%;height:auto'};display:block;${tf}">
   <defs><clipPath id="${cid}"><path d="${glass}"/></clipPath></defs>
   <!-- Ombre au sol -->
   <ellipse cx="5" cy="25.3" rx="${f(bw * 0.92)}" ry="0.65" fill="black" opacity="0.38"/>
@@ -556,6 +565,16 @@ const CORKSCREW_SVG = `<svg class="cork-icon" viewBox="0 0 24 24" width="18" hei
   <path d="M12 22.6l-1.5-2.2h3z" fill="#9A9BA4"/>
 </svg>`;
 
+// ── Ombres de la vue 3D : deux implémentations conservées, au choix ───────────
+// false (DÉFAUT, ACTIF) : ombre de CONTACT — un halo radial léger posé sous chaque
+//   bouteille. Quasi gratuit en GPU (recommandé, surtout mobile/WebView).
+// true  (INACTIF)        : ombres PCF PROJETÉES — vraie shadow map 2048² (bouteilles,
+//   planches, cadre, ombres inter-étagères, directionnelles). Plus réaliste mais
+//   lourd : c'est ce qui saturait le contexte WebGL (pertes de contexte / crash).
+// Le code des DEUX modes est présent ci-dessous, gardé par cette constante :
+// passer à `true` réactive intégralement les ombres PCF, sans rien réécrire.
+const SHADOWS_3D_PCF = false;
+
 // ── Classe principale ──────────────────────────────────────────────────────────
 
 class MillesimeCard extends HTMLElement {
@@ -622,10 +641,30 @@ class MillesimeCard extends HTMLElement {
     set('--font-serif', this._fontSerif);
     set('--font-sans',  this._fontSans);
     this.style.fontFamily = this._fontSans;
-    this.style.fontSize   = (parseFloat(cfg.font_size) || 13) + 'px';
     this._injectFonts(serifName, sansName, cfg.font_url);
-    this._fsBase = parseFloat(cfg.font_size) || 13;
-    set('--fs-base', this._fsBase + 'px');
+    if (cfg.font_size) {
+      // Réglage explicite : taille fixe (priorité à la config YAML)
+      this._fsBase = parseFloat(cfg.font_size) || 14;
+      this.style.fontSize = this._fsBase + 'px';
+      set('--fs-base', this._fsBase + 'px');
+      this._fsModalCss = this._fsBase + 'px';
+    } else {
+      // Base FLUIDE par défaut : suit la largeur de la CARTE (unité cqi résolue via
+      // le conteneur :host), bornée 13–18px. Tout le texte étant en em, l'ensemble
+      // s'adapte en continu — y compris vers le HAUT sur grand écran (Full HD), où
+      // l'ancien plafond 15px (atteint dès ~440px) bridait la carte. Appliquée sur
+      // .card car un conteneur ne peut pas se mesurer lui-même (cqi sur :host
+      // viserait le viewport).
+      this._fsBase = 15;                       // médiane pour les calculs JS (labels 2D)
+      this.style.removeProperty('font-size');
+      // Pas d'inline : le défaut vient de :host (CARD_CSS) → surchargeable par card-mod.
+      this.style.removeProperty('--fs-base');
+      // Popups hors conteneur (document.body) → fluide en vw au lieu de cqi (cqi y
+      // viserait le viewport). Plancher 14px (confort des formulaires au doigt),
+      // plafond 21px : une boîte de dialogue peut être un peu plus généreuse que la
+      // carte, et sur Full HD l'ancien plafond 18px paraissait petit.
+      this._fsModalCss = 'clamp(14px, 2vw, 21px)';
+    }
   }
 
   _injectFonts(serifName, sansName, customUrl) {
@@ -885,9 +924,9 @@ class MillesimeCard extends HTMLElement {
       const overlay = document.createElement("div");
       overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:100000;display:flex;align-items:center;justify-content:center";
       overlay.style.setProperty('--font-sans', this._fontSans || "'Inter', sans-serif");
-      overlay.style.setProperty('--fs-base',  (this._fsBase  || 13) + 'px');
+      overlay.style.setProperty('--fs-base',  this._fsModalCss || ((this._fsBase || 14) + 'px'));
       overlay.style.fontFamily = this._fontSans || "'Inter', sans-serif";
-      overlay.style.fontSize   = (this._fsBase  || 13) + 'px';
+      overlay.style.fontSize   = this._fsModalCss || ((this._fsBase || 14) + 'px');
       const box = document.createElement("div");
       box.style.cssText = "background:#111;border:1px solid #333;border-radius:14px;padding:22px 24px;max-width:360px;width:90%;color:#EDE0CC;font-size:1em;line-height:1.6;box-shadow:0 8px 32px rgba(0,0,0,0.6)";
       const p = document.createElement("p");
@@ -966,9 +1005,9 @@ class MillesimeCard extends HTMLElement {
       .forEach(p => { if (themeVars[p]) overlay.style.setProperty(`--${p}`, themeVars[p]); });
     overlay.style.setProperty('--font-serif', this._fontSerif || "'Playfair Display', serif");
     overlay.style.setProperty('--font-sans',  this._fontSans  || "'Inter', sans-serif");
-    overlay.style.setProperty('--fs-base',    (this._fsBase   || 13) + 'px');
+    overlay.style.setProperty('--fs-base',    this._fsModalCss || ((this._fsBase || 14) + 'px'));
     overlay.style.fontFamily = this._fontSans || "'Inter', sans-serif";
-    overlay.style.fontSize   = (this._fsBase  || 13) + 'px';
+    overlay.style.fontSize   = this._fsModalCss || ((this._fsBase || 14) + 'px');
     const box = document.createElement("div");
     box.className = "mm-box" + ((type === "bottlelist" || type === "racklist") ? " mm-box-wide" : "");
 
@@ -1043,7 +1082,7 @@ class MillesimeCard extends HTMLElement {
           </div>
           <div class="mm-field">
             <label class="mm-label">Étagères</label>
-            <input class="mm-input" id="fl-shelves" type="number" value="${rack?.shelves || 2}" min="1" max="20">
+            <input class="mm-input" id="fl-shelves" type="number" value="${rack?.shelves || 2}" min="1" max="10">
           </div>
         </div>
         <div class="mm-field">
@@ -1196,7 +1235,7 @@ class MillesimeCard extends HTMLElement {
                 value="${esc(b.name || "")}">
             </div>
             <button class="mm-btn-photo" id="btn-photo" title="Scanner l'étiquette">📷</button>
-            <input type="file" id="photo-input" accept="image/*" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;overflow:hidden">
+            <input type="file" id="photo-input" accept="image/*" ${_isMobile() ? 'capture="environment"' : ''} style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;overflow:hidden">
           </div>
           <div id="search-banner"></div>
           <div id="viv-results" class="mm-viv-results"></div>
@@ -1909,6 +1948,7 @@ class MillesimeCard extends HTMLElement {
 
   _slotEditHTML(wine, slotIdx) {
     const s = wine.slots?.[slotIdx] || {};
+    const racks = this._data?.cellar?.racks || [];
     return `
       <div class="mm-header">
         <span class="mm-title">🍾 Modifier la bouteille</span>
@@ -1931,6 +1971,15 @@ class MillesimeCard extends HTMLElement {
             <input class="mm-input" id="se-comment" value="${esc(s.comment || "")}" placeholder="ex. : cadeau, étiquette abîmée…">
           </div>
         </div>
+        <!-- Déplacement tactile : alternative au glisser-déposer (inopérant au doigt en 2D) -->
+        <div class="mm-field" style="margin-top:6px">
+          <label class="mm-label">📍 Déplacer cette bouteille</label>
+          <select class="mm-input" id="se-rack">
+            ${racks.map(f => `<option value="${esc(f.id)}" ${f.id === s.rack_id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}
+          </select>
+          <input type="hidden" id="se-slot" value="${Number.isInteger(s.slot) ? s.slot : 0}">
+          <div id="se-slot-picker" class="sp-picker"></div>
+        </div>
       </div>
       <div class="mm-footer">
         <button class="mm-btn mm-btn-ghost" data-close>Annuler</button>
@@ -1939,13 +1988,51 @@ class MillesimeCard extends HTMLElement {
   }
 
   _bindSlotEdit(box, wine, slotIdx) {
+    const cur = wine.slots?.[slotIdx] || {};
+    // Picker mono-sélection : le slot actuel de CETTE bouteille est exclu des
+    // occupés (donc déplaçable sur lui-même = aucun déplacement) ; les slots des
+    // autres bouteilles restent « pris » et non cliquables.
+    const renderPicker = () => this._renderSlotPicker(box, "se-rack", "se-slot-picker", "se-slot", wine.id, false);
+    box.querySelector("#se-rack")?.addEventListener("change", () => {
+      // Casier changé : présélectionne le 1er emplacement libre du nouveau casier
+      const rackId = box.querySelector("#se-rack").value;
+      if (rackId !== cur.rack_id) {
+        const rack = (this._data?.cellar?.racks || []).find(f => f.id === rackId);
+        const total = rack ? (rack.slots || (rack.columns || 8) * (rack.shelves || 2)) : 0;
+        const taken = new Set();
+        (this._data?.wines || []).forEach(w => w.slots?.forEach(sl => {
+          if (sl.rack_id === rackId && !(w.id === wine.id)) taken.add(sl.slot);
+        }));
+        let free = 0; while (free < total && taken.has(free)) free++;
+        box.querySelector("#se-slot").value = free < total ? free : 0;
+      }
+      renderPicker();
+    });
+    renderPicker();
+
     box.querySelector("#se-submit")?.addEventListener("click", async () => {
-      await this._callService("update_slot", {
-        wine_id:  wine.id,
-        slot_idx: slotIdx,
-        size:     box.querySelector("#se-size")?.value?.trim() || "",
-        comment:  box.querySelector("#se-comment")?.value?.trim() || "",
-      });
+      const tgtRack = box.querySelector("#se-rack")?.value || cur.rack_id;
+      const tgtSlot = parseInt(box.querySelector("#se-slot")?.value);
+      const moved = !isNaN(tgtSlot) && (tgtRack !== cur.rack_id || tgtSlot !== cur.slot);
+      try {
+        if (moved) {
+          await this._hass.callService(DOMAIN, "move_slot", {
+            wine_id: wine.id, slot_idx: slotIdx, rack_id: tgtRack, slot: tgtSlot,
+          });
+        }
+        await this._hass.callService(DOMAIN, "update_slot", {
+          wine_id:  wine.id,
+          slot_idx: slotIdx,
+          size:     box.querySelector("#se-size")?.value?.trim() || "",
+          comment:  box.querySelector("#se-comment")?.value?.trim() || "",
+        });
+        this._closeModal();
+        await this._fetchData();
+        setTimeout(() => this._fetchData(), 600);
+        if (moved) this._showToast("success", "Bouteille déplacée ✓");
+      } catch (err) {
+        this._showToast("error", `Erreur : ${err.message || JSON.stringify(err)}`);
+      }
     });
   }
 
@@ -3169,11 +3256,24 @@ class MillesimeCard extends HTMLElement {
     return `<style>:host{font-family:${ff};font-size:${fs}}</style>`;
   }
 
+  // card_mod-friendly : on écrit le contenu dans un conteneur stable (#mm-root) au
+  // lieu d'écraser tout le shadowRoot. Les <style> injectés par card_mod sont des
+  // FRÈRES de #mm-root → ils survivent à chaque re-rendu (plus de flash de style).
+  _writeRoot(html) {
+    let root = this.shadowRoot.getElementById("mm-root");
+    if (!root) {
+      root = document.createElement("div");
+      root.id = "mm-root";
+      this.shadowRoot.appendChild(root);
+    }
+    root.innerHTML = html;
+  }
+
   _renderLoading() {
-    this.shadowRoot.innerHTML = CARD_CSS + this._fontCSS() + `
+    this._writeRoot(CARD_CSS + this._fontCSS() + `
       <div class="card">
         <div class="loading-state"><div class="loading-glass">${GLASS_SVG}</div></div>
-      </div>`;
+      </div>`);
   }
 
   _render() {
@@ -3181,7 +3281,7 @@ class MillesimeCard extends HTMLElement {
     const data   = this._data || DEFAULT_DATA();
     const racks = data.cellar?.racks || [];
     const wines  = data.wines || [];
-    this.shadowRoot.innerHTML = CARD_CSS + this._fontCSS() + `
+    this._writeRoot(CARD_CSS + this._fontCSS() + `
       <div class="card">
         ${this._renderHeader(data, wines)}
         ${this._renderFilters()}
@@ -3195,7 +3295,7 @@ class MillesimeCard extends HTMLElement {
                     return racks.map((f, i) => this._renderRack(f, wines, i, maxCols)).join("");
                   })())}
         </div>
-      </div>`;
+      </div>`);
     this._bindCardListeners(data, wines);
     if (this._view === "3d") this._mount3D(); else this._unmount3D();
   }
@@ -3689,12 +3789,10 @@ class MillesimeCard extends HTMLElement {
     const isAlt  = rack.layout === "alternating";
     const isAlt2 = rack.layout === "alternating_2d";
     const isQc   = rack.layout === "quinconce";
-    const isCircleMode = this._view === "dot";
     const lm = this._config?.bottle_label || "none";
     // font-size:0.85em × line-height:1.3 = 14.3px + padding-top:1px → 16px par label
     const lblCount = (lm === "name_vintage" || lm === "vintage_name") ? 2 : lm === "none" ? 0 : 1;
     const labelExtraH = lblCount * Math.ceil((this._fsBase || 13) * 0.85 * 1.3 + 1);
-    const rowH = (isCircleMode ? 40 : 80) + labelExtraH;
     const pct   = Math.round((Object.keys(slotMap).length / total) * 100);
 
     const byType = {};
@@ -3742,39 +3840,41 @@ class MillesimeCard extends HTMLElement {
         else if (lm === "vintage_name") labelEls = lbl(yr || ph) + lbl(nm ? nbsp(short(nm, 12)) : ph);
       }
 
-      // En mode cercle + tête-bêche : positions alternées = cercle plus petit (pas de rotation)
-      const circleSize = isCircle ? (alt ? 28 : 40) : 40;
+      // Taille FLUIDE : plus aucune dimension en pixels fixes ici. La largeur des
+      // bouteilles/pastilles est plafonnée en CSS (clamp + cqi → progressif avec la
+      // largeur de carte) et, sous ce plafond, suit la largeur de colonne (1fr) →
+      // aucun débordement, quel que soit le nombre de colonnes. (Le `.dot` garde
+      // width:100% : la cible tactile reste toute la cellule.)
       const bottleContent = wine
         ? (isCircle
-            ? `<svg class="dot-svg-c" viewBox="0 0 10 10" width="10" height="10" xmlns="http://www.w3.org/2000/svg" style="width:${circleSize}px;height:${circleSize}px;display:block"><circle cx="5" cy="5" r="5" fill="${wt.color}"/><circle cx="5" cy="5" r="5" fill="white" opacity="0.12"/><ellipse cx="3.5" cy="3.5" rx="1.5" ry="1" fill="white" opacity="0.2"/></svg>`
-            : BOTTLE_MINI(wt.color, Math.round(80 * 10 / 26), wine.type, alt, entry.size || wine.size, wine.shape || ""))
+            ? `<svg class="dot-svg-c" viewBox="0 0 10 10" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block"><circle cx="5" cy="5" r="5" fill="${wt.color}"/><circle cx="5" cy="5" r="5" fill="white" opacity="0.12"/><ellipse cx="3.5" cy="3.5" rx="1.5" ry="1" fill="white" opacity="0.2"/></svg>`
+            : BOTTLE_MINI(wt.color, null, wine.type, alt, entry.size || wine.size, wine.shape || ""))
         : (isCircle
-            ? `<svg class="dot-svg-c" viewBox="0 0 10 10" width="10" height="10" xmlns="http://www.w3.org/2000/svg" style="width:${circleSize}px;height:${circleSize}px;display:block"><circle cx="5" cy="5" r="4.5" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="0.8" stroke-dasharray="1.8 1.2"/></svg>`
-            : BOTTLE_GHOST(Math.round(80 * 10 / 26)));
+            ? `<svg class="dot-svg-c" viewBox="0 0 10 10" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block"><circle cx="5" cy="5" r="4.5" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="0.8" stroke-dasharray="1.8 1.2"/></svg>`
+            : BOTTLE_GHOST());
 
-      // mode dot : seule la hauteur est imposée inline (width:100% vient du CSS, le SVG est centré par justify-content:center)
-      const sizeStyle = isCircle ? `height:40px;` : ``;
       const dotEl = `<div
         class="dot ${wine ? "dot--filled" : "dot--empty"} ${sel ? "dot--selected" : ""} ${!isCircle && alt ? "dot--alt" : ""} ${isCircle && alt ? "dot--c-alt" : ""}"
         data-slot="${i}" data-rack-id="${rack.id}" data-wine-id="${wine?.id || ""}" data-slot-idx="${slotIdx}"
-        style="${[dotStyle, sizeStyle].filter(Boolean).join(";")}"
+        style="${dotStyle}"
         title="${wine
           ? esc(wine.name) + (wine.vintage ? " " + esc(wine.vintage) : "") + " — " + esc(this._slotLabel({ rack_id: rack.id, slot: i }))
           : esc(this._slotLabel({ rack_id: rack.id, slot: i })) + " — cliquer pour ajouter"}"
       >${bottleContent}</div>`;
 
       const labelsHtml = labelEls ? `<div class="dot-labels" style="height:${labelExtraH}px">${labelEls}</div>` : "";
-      const cellStyle = `height:${rowH}px;${extraStyle}`;
-      return `<div class="dot-cell${lm !== "none" ? " dot-cell--labeled" : ""}" style="${cellStyle}">${dotEl}${labelsHtml}</div>`;
+      // La hauteur de cellule n'est plus imposée : elle découle de la hauteur réelle
+      // (fluide) de la bouteille + des libellés. `grid-auto-rows:auto` s'en charge.
+      return `<div class="dot-cell${lm !== "none" ? " dot-cell--labeled" : ""}"${extraStyle ? ` style="${extraStyle}"` : ""}>${dotEl}${labelsHtml}</div>`;
     };
 
     let dots = "";
-    let dotsStyle = `grid-template-columns:repeat(${cols},1fr);grid-auto-rows:${rowH}px`;
+    let dotsStyle = `grid-template-columns:repeat(${cols},1fr);grid-auto-rows:auto`;
 
     if (isQc) {
       // Grille double-colonne : chaque bouteille occupe 2 colonnes
       // Les étagères impaires sont décalées d'une colonne → quinconce parfait
-      dotsStyle = `grid-template-columns:repeat(${cols * 2 + 1},1fr);grid-auto-rows:${rowH}px;padding-top:4px`;
+      dotsStyle = `grid-template-columns:repeat(${cols * 2 + 1},1fr);grid-auto-rows:auto;padding-top:4px`;
       const numRows = Math.ceil(total / cols);
       for (let row = 0; row < numRows; row++) {
         const odd = row % 2 === 1;
@@ -3824,43 +3924,21 @@ class MillesimeCard extends HTMLElement {
   }
 
   // ── Permutation de deux emplacements occupés ─────────────────────────────────
-  // Le backend interdit de déposer sur un slot occupé → swap en 3 étapes via un
-  // slot libre temporaire. Utilisé par le drag & drop 2D et 3D.
+  // Permutation ATOMIQUE côté backend (swap_slots) : échange les positions des deux
+  // bouteilles d'un coup. Ne nécessite AUCUN emplacement libre → marche cave PLEINE.
+  // Utilisé par le drag & drop 2D et 3D.
 
   async _swapViaTemp(src, tgt) {
-    const data  = this._data || DEFAULT_DATA();
-    const wines = data.wines || [];
-    const occupied = new Set();
-    wines.forEach(w => w.slots?.forEach(s => occupied.add(`${s.rack_id}:${s.slot}`)));
-    let tempRackId = null, tempSlot = -1;
-    for (const rack of (data.cellar?.racks || [])) {
-      const total = rack.slots || (rack.columns || 8) * (rack.shelves || 2);
-      for (let i = 0; i < total; i++) {
-        if (!occupied.has(`${rack.id}:${i}`)) { tempRackId = rack.id; tempSlot = i; break; }
-      }
-      if (tempSlot !== -1) break;
-    }
-    if (tempSlot === -1) {
-      this._showToast("error", "Cave pleine : permutation impossible.");
-      return;
-    }
-    // Silence des mises à jour pendant la séquence : les 3 move_slot déclenchent
-    // chacun un événement millesime_updated → sans ce verrou, on voit les états
-    // intermédiaires (bouteille sur le slot temporaire) défiler à l'écran
-    this._squelchUpdates = true;
     try {
-      // 1. Libérer le slot source en déplaçant A vers le slot libre
-      await this._hass.callService(DOMAIN, "move_slot", { wine_id: src.wineId, slot_idx: src.slotIdx, rack_id: tempRackId, slot: tempSlot });
-      // 2. Déplacer B vers l'ancien slot de A (maintenant libre)
-      await this._hass.callService(DOMAIN, "move_slot", { wine_id: tgt.wineId, slot_idx: tgt.slotIdx, rack_id: src.rackId, slot: src.slot });
-      // 3. Déplacer A depuis le slot temporaire vers l'ancien slot de B (maintenant libre)
-      await this._hass.callService(DOMAIN, "move_slot", { wine_id: src.wineId, slot_idx: src.slotIdx, rack_id: tgt.rackId, slot: tgt.slot });
+      await this._hass.callService(DOMAIN, "swap_slots", {
+        wine_id_a: src.wineId, slot_idx_a: src.slotIdx,
+        wine_id_b: tgt.wineId, slot_idx_b: tgt.slotIdx,
+      });
     } catch (err) {
       this._showToast("error", `Erreur permutation : ${err.message || JSON.stringify(err)}`);
-    } finally {
-      this._squelchUpdates = false;
     }
     await this._fetchData();           // un seul rendu, avec l'état final
+    setTimeout(() => this._fetchData(), 600);
   }
 
   // ════════════════════════════════════════════════════════════════════
@@ -3879,7 +3957,10 @@ class MillesimeCard extends HTMLElement {
     if (!t) return;
     try {
       t.ro?.disconnect();
+      window.removeEventListener("orientationchange", t.onOrient);
       const el = t.renderer.domElement;
+      el.removeEventListener("webglcontextlost", t.onCtxLost);
+      el.removeEventListener("webglcontextrestored", t.onCtxRestored);
       el.removeEventListener("click", t.onPick);
       el.removeEventListener("pointerdown", t.onDown);
       el.removeEventListener("pointermove", t.onMove);
@@ -3888,11 +3969,19 @@ class MillesimeCard extends HTMLElement {
       t.scene.traverse((o) => {
         o.geometry?.dispose?.();
         if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => {
-          m.map?.dispose?.();
+          // Libérer TOUTES les textures du matériau (pas seulement .map) : envMap,
+          // bumpMap, etc. sinon elles fuient d'un montage à l'autre.
+          for (const v of Object.values(m)) v?.isTexture && v.dispose?.();
           m.dispose();
         });
       });
       t.renderer.dispose();
+      // Libérer IMMÉDIATEMENT le contexte WebGL. Sans ça, dispose() seul laisse le
+      // contexte vivant jusqu'au GC : les remontages (rotation/reconnexion) les
+      // accumulent, le navigateur tue les plus anciens (limite ~16 contextes) et
+      // crache des "GL_INVALID_OPERATION / Texture is immutable". Les écouteurs
+      // contextlost/restored ont été retirés ci-dessus → pas de boucle de remontage.
+      t.renderer.forceContextLoss?.();
       el.remove();
     } catch (e) { /* noop */ }
     this._three = null;
@@ -3949,6 +4038,12 @@ class MillesimeCard extends HTMLElement {
     scene.add(new THREE.AmbientLight(0xfff4e0, 0.55));
     const key = new THREE.DirectionalLight(0xffffff, 1.35);
     key.position.set(5, 12, 9);
+    if (SHADOWS_3D_PCF) {                       // PCF projeté — inactif par défaut
+      key.castShadow = true;
+      key.shadow.mapSize.set(2048, 2048);
+      key.shadow.bias = -0.0004;
+      key.shadow.radius = 5;
+    }
     scene.add(key);
     const fill = new THREE.DirectionalLight(0xc9d4ff, 0.35);
     fill.position.set(-6, 4, 5);
@@ -4065,8 +4160,10 @@ class MillesimeCard extends HTMLElement {
         .concat([...ghostPts].reverse().map(([r, y]) => new THREE.Vector3(-r, 0, -(1.86 - y))))
     );
 
-    // ── Ombre de contact : halo doux posé sur la planche, sous chaque bouteille.
-    //    Remplace les ombres projetées PCF (plus d'ombre d'une étagère sur l'autre).
+    // ── Ombre de contact (MODE ACTIF, SHADOWS_3D_PCF=false) : halo doux posé sur
+    //    la planche, sous chaque bouteille. Léger ; pas d'ombre d'une étagère sur
+    //    l'autre. Le matériau/géométrie sont créés ici, le mesh par bouteille n'est
+    //    ajouté que si le mode PCF est désactivé (voir plus bas).
     const _shCv = document.createElement("canvas");
     _shCv.width = _shCv.height = 128;
     const _shx = _shCv.getContext("2d");
@@ -4413,6 +4510,7 @@ class MillesimeCard extends HTMLElement {
           isIron ? ironMat : [wm.side, wm.side, wm.top, wm.side, wm.side, wm.side]
         );
         plank.position.set(0, shelfY - (isIron ? 0.05 : PLANK_H / 2), 0);
+        if (SHADOWS_3D_PCF) { plank.receiveShadow = true; plank.castShadow = true; }
         scene.add(plank);
 
         if (isIron) {
@@ -4420,6 +4518,7 @@ class MillesimeCard extends HTMLElement {
           const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, plankW - 0.2, 10), ironMat);
           rail.rotation.z = Math.PI / 2;
           rail.position.set(0, shelfY - 0.17, 1.92);
+          if (SHADOWS_3D_PCF) rail.castShadow = true;
           scene.add(rail);
         }
 
@@ -4482,6 +4581,7 @@ class MillesimeCard extends HTMLElement {
           const set = geoByType[shapeKey] || geoByType[tp] || setBordeaux;
           const g = new THREE.Group();
           const body = new THREE.Mesh(set.body, filtered ? fadedMats[tp] : mats[tp]);
+          if (SHADOWS_3D_PCF) { body.castShadow = !filtered; body.receiveShadow = true; }
           const cap  = new THREE.Mesh(set.cap, capMats[tp]);
           // Tête du champignon en liège : la couronne autour de la plaque (fût évasé
           // + bord de la calotte) est en liège apparent, seul le centre est couvert
@@ -4494,9 +4594,9 @@ class MillesimeCard extends HTMLElement {
           const lblMat = labelMatFor(tp, wine.name) || labelMat;
           const lbl  = new THREE.Mesh(set.label, lblMat);
           cap.visible = cork.visible = lbl.visible = !filtered;
-          // Collerette masquée en disposition semi-couchée (demande utilisateur)
+          // Collerette masquée en disposition semi-couchée (6.7.1)
           col.visible = !filtered && !tilt;
-          if (!filtered) {
+          if (!filtered && !SHADOWS_3D_PCF) {        // ombre de contact (mode actif)
             const csh = new THREE.Mesh(contactGeo, contactMat);
             csh.position.set(x, shelfY + 0.011, stag);
             scene.add(csh);
@@ -4608,6 +4708,7 @@ class MillesimeCard extends HTMLElement {
         const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), frameMat);
         if (rotX) m.rotation.x = rotX;
         m.position.set(x, y, z);
+        if (SHADOWS_3D_PCF) m.castShadow = m.receiveShadow = true;
         scene.add(m);
       };
       const px = plankW / 2 - 0.07, pz = 2.0 - 0.07, yMid = (frTop + frBot) / 2;
@@ -4618,10 +4719,12 @@ class MillesimeCard extends HTMLElement {
           for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
             const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, frH, 10), ironMat);
             post.position.set(sx * px, yMid, sz * pz);
+            if (SHADOWS_3D_PCF) post.castShadow = post.receiveShadow = true;
             scene.add(post);
             if (!st.roof) {
               const ball = new THREE.Mesh(new THREE.SphereGeometry(0.085, 12, 10), ironMat);
               ball.position.set(sx * px, frTop + 0.07, sz * pz);
+              if (SHADOWS_3D_PCF) ball.castShadow = true;
               scene.add(ball);
             }
           }
@@ -4681,16 +4784,28 @@ class MillesimeCard extends HTMLElement {
     const MARGIN_X = 1.03;
     const PAD_TOP = 0.45, PAD_BOT = 0.95;     // marges monde (bas = place du badge)
 
-    // Ombres : couvrir toute la scène
+    // Lumière clé : viser le centre de la scène. En mode contact (défaut) il n'y a
+    // pas de shadow map ; en mode PCF on cadre la shadow camera sur toute la scène.
     key.target.position.copy(c3);
     scene.add(key.target);
     key.position.set(c3.x + 5, c3.y + s3.y / 2 + 8, c3.z + 9);
+    if (SHADOWS_3D_PCF) {                       // cadrage de la shadow map — inactif par défaut
+      const sc = key.shadow.camera;
+      sc.left = -(s3.x / 2 + 3); sc.right = s3.x / 2 + 3;
+      sc.top  =  s3.y / 2 + 4;   sc.bottom = -(s3.y / 2 + 4);
+      sc.near = 1; sc.far = 90;
+      sc.updateProjectionMatrix();
+    }
 
     const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
 
     // ── Renderer HD ──
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    if (SHADOWS_3D_PCF) {                       // shadow map PCF — inactif par défaut
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.12;
@@ -4699,7 +4814,16 @@ class MillesimeCard extends HTMLElement {
     stage.appendChild(renderer.domElement);
     renderer.domElement.style.cssText = "display:block;width:100%;height:100%;border-radius:12px;touch-action:pan-y";
 
-    const draw = () => renderer.render(scene, cam);
+    const glCtx = renderer.getContext();
+    const draw = () => {
+      // Ne JAMAIS appeler render() sur un contexte perdu : three lit alors
+      // gl.getProgramInfoLog() == null et plante sur `null.trim()` (visible via
+      // le chemin PMREM de génération de l'env-map au premier rendu). Un contexte
+      // peut sauter entre deux remontages (rotation/reconnexion) ; on saute le
+      // rendu, le remontage suivant reconstruira une scène saine.
+      if (glCtx.isContextLost?.()) return;
+      renderer.render(scene, cam);
+    };
 
     // ── Overlays : badge sous chaque clayette + rail vertical à droite ──
     const placeOverlays = (w, h) => {
@@ -4724,11 +4848,14 @@ class MillesimeCard extends HTMLElement {
           stage.appendChild(badge);
         }
 
-        // Rail vertical aligné sur le haut du casier
+        // Rail vertical au bord droit du casier (suit le centrage sur carte large
+        // au lieu de rester collé au bord du stage)
         const pr = toPx(halfW, yTop + 0.7, 0);
         const rail = document.createElement("div");
         rail.className = "t3-rail";
         rail.style.top = Math.max(4, pr.y - 50) + "px";
+        rail.style.left = Math.min(pr.x + 4, w - 40) + "px";
+        rail.style.right = "auto";
         rail.innerHTML = `
           <button class="icon-btn" data-edit-rack="${esc(rack.id)}" title="Modifier">⚙</button>
           <button class="icon-btn" data-move-rack="${esc(rack.id)}" title="Déplacer le contenu">📦</button>
@@ -4741,16 +4868,23 @@ class MillesimeCard extends HTMLElement {
     // ── Layout : la largeur dicte l'échelle, la hauteur suit le contenu ──
     let curW = 0;
     const RAIL_PX = 48;                        // zone réservée au rail d'actions
+    // Largeur de rendu PLAFONNÉE : au-delà, la scène ne s'étire plus (bouteilles
+    // géantes sur desktop) — on garde l'échelle de ~MAX_W px et on CENTRE le casier
+    // dans la largeur réelle. Sous MAX_W (mobile/colonne), marge = 0 → inchangé.
+    const MAX_W = 780;
     const layout = (w) => {
       curW = w;
-      const usable = Math.max(120, w - RAIL_PX);
+      const effW = Math.min(w, MAX_W);
+      const usable = Math.max(120, effW - RAIL_PX);
       const pxPerUnit = usable / (s3.x * MARGIN_X);
       const h = Math.max(150, Math.round((s3.y + PAD_TOP + PAD_BOT) * pxPerUnit));
       const hW = (s3.x * MARGIN_X) / 2;
       const extra = RAIL_PX / pxPerUnit;       // unités monde à droite (hors clayettes)
+      // Marge de centrage quand la carte dépasse MAX_W (sinon 0)
+      const margin = Math.max(0, (w - effW) / (2 * pxPerUnit));
       const hH = h / (2 * pxPerUnit);
       const cy = c3.y - (PAD_BOT - PAD_TOP) / 2;
-      cam.left = -hW; cam.right = hW + extra; cam.top = hH; cam.bottom = -hH;
+      cam.left = -(hW + margin); cam.right = hW + extra + margin; cam.top = hH; cam.bottom = -hH;
       // Cadrage d'origine : élévation ~16° + léger décalage latéral (vue 3/4 douce).
       // La projection orthographique garde toutes les bouteilles parallèles malgré
       // le décalage — pas de point de fuite par bouteille.
@@ -4993,7 +5127,32 @@ class MillesimeCard extends HTMLElement {
     });
     ro.observe(stage);
 
-    this._three = { renderer, scene, cam, ro, onPick, onDown, onMove, onUp, onCancel };
+    // ── Mobile : bascule d'orientation ──
+    // 1) La WebView peut perdre le contexte WebGL au changement d'orientation.
+    //    Sans preventDefault sur "webglcontextlost", le navigateur ne restaure
+    //    JAMAIS le contexte : le canvas reste vide définitivement. On accepte la
+    //    restauration puis on remonte toute la scène (les ressources GPU —
+    //    textures, géométries, framebuffers — sont invalidées par la perte).
+    const canvas = renderer.domElement;
+    const onCtxLost     = (e) => e.preventDefault();
+    const onCtxRestored = () => {
+      if (this._view === "3d") requestAnimationFrame(() => this._mount3D());
+    };
+    canvas.addEventListener("webglcontextlost", onCtxLost, false);
+    canvas.addEventListener("webglcontextrestored", onCtxRestored, false);
+    // 2) Certaines WebView Android vident le back-buffer SANS émettre
+    //    "webglcontextlost" : on remesure et on redessine une fois la nouvelle
+    //    taille stabilisée (double rAF). Couvre aussi le cas où la largeur reste
+    //    identique (le ResizeObserver ne se déclencherait alors pas).
+    const onOrient = () => requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (this._view !== "3d" || !this._three) return;
+        const w = stage.clientWidth || curW;
+        if (w > 0 && Math.abs(w - curW) > 1) layout(w); else draw();
+      }));
+    window.addEventListener("orientationchange", onOrient);
+
+    this._three = { renderer, scene, cam, ro, canvas, onCtxLost, onCtxRestored, onOrient, onPick, onDown, onMove, onUp, onCancel };
   }
 
   _bind3DOverlays(stage, data, wines) {
@@ -5126,6 +5285,8 @@ class MillesimeCard extends HTMLElement {
       const rackId = dot.dataset.rackId;
 
       dot.addEventListener("click", () => {
+        // Un glisser tactile vient de se terminer → on neutralise le click induit
+        if (this._suppressClick) { this._suppressClick = false; return; }
         // Case vide → formulaire d'ajout (souris comme tactile)
         if (!wine) { this._openModal("bottle", { slot: { rack_id: rackId, slot } }); return; }
         if (this._lastPT === "touch") {
@@ -5243,10 +5404,99 @@ class MillesimeCard extends HTMLElement {
         await this._callService("move_slot", { wine_id: wineId, slot_idx: slotIdx, rack_id: targetRack, slot: targetSlot });
       });
     });
+
+    // ── Glisser-déposer TACTILE (mobile) ───────────────────────────────────────
+    // Le DnD HTML5 natif (souris, ci-dessus) ne s'arme pas au toucher : on l'assure
+    // en touch events. Appui maintenu (~260 ms) pour « saisir » (distingue du tap
+    // d'aperçu et du défilement), puis on suit le doigt jusqu'au dépôt.
+    const allDots   = Array.from(s.querySelectorAll(".dot"));
+    const dotAtPoint = (x, y) => allDots.find((d) => {
+      const r = d.getBoundingClientRect();
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    });
+    const clearOver = () => s.querySelectorAll(".dot--drag-over").forEach((d) => d.classList.remove("dot--drag-over"));
+
+    s.querySelectorAll(".dot--filled").forEach((dot) => {
+      let td = null;   // état du geste : {x0, y0, timer, active}
+      const stop = () => {
+        if (td?.timer) clearTimeout(td.timer);
+        td = null;
+        dot.classList.remove("dot--grab");
+        clearOver();
+      };
+      dot.addEventListener("touchstart", (e) => {
+        if (!dot.dataset.wineId || e.touches.length !== 1) return;
+        const t = e.touches[0];
+        td = { x0: t.clientX, y0: t.clientY, timer: null, active: false };
+        td.timer = setTimeout(() => {
+          if (!td) return;
+          td.active = true;
+          dot.classList.add("dot--grab");
+          try { navigator.vibrate?.(15); } catch (_) { /* noop */ }
+        }, 260);
+      }, { passive: true });
+      dot.addEventListener("touchmove", (e) => {
+        if (!td) return;
+        const t = e.touches[0];
+        if (!td.active) {
+          // Bougé avant l'appui long = défilement : on abandonne (laisse scroller)
+          if (Math.hypot(t.clientX - td.x0, t.clientY - td.y0) > 10) stop();
+          return;
+        }
+        e.preventDefault();                 // drag armé → on bloque le défilement
+        clearOver();
+        const over = dotAtPoint(t.clientX, t.clientY);
+        if (over && over !== dot) over.classList.add("dot--drag-over");
+      }, { passive: false });
+      dot.addEventListener("touchend", async (e) => {
+        if (!td) return;
+        const active = td.active;
+        const t = e.changedTouches[0];
+        stop();
+        if (!active) return;                // simple appui → on laisse le click agir
+        // Neutralise le click synthétique qui suit (sécurité : auto-reset)
+        this._suppressClick = true;
+        setTimeout(() => { this._suppressClick = false; }, 500);
+        const tgt = dotAtPoint(t.clientX, t.clientY);
+        if (!tgt || tgt === dot) return;
+        const src = {
+          wineId: dot.dataset.wineId, slotIdx: parseInt(dot.dataset.slotIdx),
+          rackId: dot.dataset.rackId,  slot: parseInt(dot.dataset.slot),
+        };
+        if (tgt.classList.contains("dot--filled") && tgt.dataset.wineId && tgt.dataset.wineId !== src.wineId) {
+          await this._swapViaTemp(src, {
+            wineId: tgt.dataset.wineId, slotIdx: parseInt(tgt.dataset.slotIdx),
+            rackId: tgt.dataset.rackId,  slot: parseInt(tgt.dataset.slot),
+          });
+        } else if (tgt.classList.contains("dot--empty")) {
+          await this._callService("move_slot", {
+            wine_id: src.wineId, slot_idx: src.slotIdx,
+            rack_id: tgt.dataset.rackId, slot: parseInt(tgt.dataset.slot),
+          });
+        }
+      }, { passive: false });
+      dot.addEventListener("touchcancel", stop, { passive: true });
+    });
+  }
+
+  connectedCallback() {
+    // HA ré-attache la carte quand il recalcule sa disposition (rotation de
+    // l'écran, resize masonry/sections…) : il appelle disconnectedCallback puis
+    // reconnecte la MÊME instance sans rappeler setConfig, et `set hass` ne
+    // re-rend pas (first=false). Sans ce hook, la vue 3D resterait démontée et
+    // la carte ne recevrait plus aucune mise à jour → contenu vide jusqu'à un
+    // rechargement manuel (F5). On restaure souscription + rendu.
+    if (!this._disconnected || !this._hass) return;   // 1er montage : set hass s'en charge
+    this._disconnected = false;
+    if (!this._unsubs.length) this._subscribeUpdates();
+    if (this._data) this._render();                   // restauration immédiate (re-montage 3D inclus)
+    else this._fetchData();
   }
 
   disconnectedCallback() {
+    this._disconnected = true;
     this._unsubs.forEach((f) => f());
+    this._unsubs = [];
     this._closeModal();
     this._unmount3D();
     this._hideBottlePanel();
@@ -5272,6 +5522,13 @@ function _drow(label, value) {
 const CARD_CSS = `<style>
 :host {
   display: block; position: relative; font-size: var(--fs-base, 13px);
+  /* Défaut FLUIDE de la base typographique posé ici (feuille de style) et non plus
+     en inline → un override card-mod « :host { --fs-base: … } » peut le surcharger.
+     Seule la config YAML font_size: repasse en inline (choix explicite, prioritaire). */
+  --fs-base: clamp(13px, 3.1cqi, 18px);
+  /* Le responsive est piloté par la largeur de la CARTE (container query), pas du
+     viewport : une carte dans une colonne étroite se compacte même sur grand écran. */
+  container-type: inline-size; container-name: mm;
   --red:#C0392B; --red-h:#E74C3C; --gold:#C9A84C;
   --accent: var(--primary-color, #C0392B);
   --accent-h: var(--secondary-color, #E74C3C);
@@ -5291,15 +5548,17 @@ const CARD_CSS = `<style>
 }
 * { box-sizing:border-box; margin:0; padding:0; }
 
-.card { background:var(--bg-0); border-radius:18px; overflow:hidden; border:1px solid var(--border); }
+/* Base de police appliquée ici (descendant du conteneur :host) pour que le clamp
+   en cqi de --fs-base se mesure sur la largeur de la CARTE, pas du viewport. */
+.card { background:var(--bg-0); border-radius:18px; overflow:hidden; border:1px solid var(--border); font-size:var(--fs-base, 13px); }
 
 .loading-state { display:flex; align-items:center; justify-content:center; height:180px; }
 .loading-glass { width:36px; opacity:0.5; animation:pulse-anim 1.4s ease-in-out infinite; }
 @keyframes pulse-anim { 0%,100%{opacity:0.3} 50%{opacity:0.8} }
 
 .header {
-  display:flex; align-items:center; gap:10px;
-  padding:12px 14px 10px;
+  display:flex; align-items:center; gap:clamp(10px,1.5cqi,14px);
+  padding:clamp(12px,1.7cqi,16px) clamp(14px,2.4cqi,22px) clamp(10px,1.4cqi,13px);
   background:linear-gradient(160deg,color-mix(in srgb,var(--card-background-color,#111) 75%,var(--header-accent,#C0392B) 25%) 0%,var(--card-background-color,#111) 100%);
   border-bottom:1px solid var(--border); position:relative;
 }
@@ -5310,23 +5569,23 @@ const CARD_CSS = `<style>
 /* Logo + nom empilés à gauche, centrés verticalement sur la hauteur des deux lignes */
 .header-left { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; flex-shrink:0; }
 .header-glass {
-  width:30px;
+  width:clamp(28px,3.7cqi,34px);
   filter:drop-shadow(0 0 8px rgba(192,57,43,0.7));
   animation:float-anim 3s ease-in-out infinite;
 }
 @keyframes float-anim { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-3px)} }
 .header-meta { text-align:center; }
-.header-name { font-family:var(--font-serif); font-size:0.82em; color:var(--cream); line-height:1.2; }
-.header-tagline { font-size:0.55em; color:var(--red); text-transform:uppercase; letter-spacing:1.5px; margin-top:2px; }
+.header-name { font-family:var(--font-serif); font-size:clamp(0.85em,2.4cqi,1.25em); color:var(--cream); line-height:1.2; }
+.header-tagline { font-size:clamp(0.55em,1.3cqi,0.74em); color:var(--red); text-transform:uppercase; letter-spacing:1.5px; margin-top:1px; }
 /* Colonne droite : stats en haut, boutons en dessous */
 .header-right { display:flex; flex-direction:column; gap:7px; flex:1; min-width:0; }
 /* Stats et actions : MÊME grille (3 colonnes égales + colonne icône à droite) → alignement parfait */
 .header-stats   { display:grid; grid-template-columns:1fr 1fr 1fr 40px; gap:5px; align-items:stretch; }
 .header-actions { display:grid; grid-template-columns:1fr 1fr 1fr 40px; gap:5px; align-items:stretch; }
-.btn-options-top, .btn-journal-top { width:40px; height:auto; align-self:stretch; display:flex; align-items:center; justify-content:center; font-size:1.05em; }
+.btn-options-top, .btn-journal-top { width:40px; height:auto; align-self:stretch; display:flex; align-items:center; justify-content:center; font-size:clamp(1.0em,2cqi,1.25em); }
 .stat { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:5px 6px; background:var(--bg-2); border-radius:8px; border:1px solid var(--border); }
-.stat-value { font-size:1.08em; font-weight:700; color:var(--cream); font-family:var(--font-serif); line-height:1; }
-.stat-label { font-size:0.54em; color:var(--muted); text-transform:uppercase; letter-spacing:1px; margin-top:2px; }
+.stat-value { font-size:clamp(1.05em,2.1cqi,1.5em); font-weight:700; color:var(--cream); font-family:var(--font-serif); line-height:1; }
+.stat-label { font-size:clamp(0.54em,0.95cqi,0.66em); color:var(--muted); text-transform:uppercase; letter-spacing:1px; margin-top:2px; }
 .stat-clickable { cursor:pointer; transition:all 0.15s; }
 .stat-clickable:hover { background:var(--bg-3); border-color:var(--header-accent,var(--red)); }
 .stat-clickable:active { transform:scale(0.97); }
@@ -5335,7 +5594,7 @@ const CARD_CSS = `<style>
   height:38px; box-sizing:border-box; width:100%; min-width:0;
   display:flex; align-items:center; justify-content:center; gap:3px;
   background:#2BA5C7; color:#fff; border:none; border-radius:8px;
-  font-size:0.86em; font-weight:600; padding:0 6px; white-space:nowrap; cursor:pointer;
+  font-size:clamp(0.82em,1.4cqi,1.0em); font-weight:600; padding:0 6px; white-space:nowrap; cursor:pointer;
   transition:filter 0.15s;
 }
 .btn-rack:hover { filter:brightness(1.1); }
@@ -5343,8 +5602,8 @@ const CARD_CSS = `<style>
 .header-actions .btn-icon, .header-actions .view-select, .header-actions .btn-primary {
   height:38px; box-sizing:border-box; width:100%; min-width:0;
 }
-.header-actions .btn-primary { font-size:0.86em; padding:0 6px; white-space:nowrap; }
-.header-actions .view-select { padding:0 4px; font-size:0.82em; }
+.header-actions .btn-primary { font-size:clamp(0.82em,1.4cqi,1.0em); padding:0 6px; white-space:nowrap; }
+.header-actions .view-select { padding:0 4px; font-size:clamp(0.78em,1.3cqi,0.95em); }
 
 /* ── Ligne d'options repliable (sous le verre du logo) ── */
 .header-options {
@@ -5359,7 +5618,7 @@ const CARD_CSS = `<style>
 .opt-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; align-items:center; }
 .opt-btn {
   padding:9px 12px; border-radius:8px; border:1px solid var(--border);
-  background:var(--bg-2); color:var(--cream); font-size:0.78em; font-weight:600;
+  background:var(--bg-2); color:var(--cream); font-size:clamp(0.82em,1.5cqi,1.02em); font-weight:600;
   cursor:pointer; transition:all 0.15s; white-space:nowrap; width:100%; box-sizing:border-box;
 }
 .opt-btn:hover { background:var(--bg-3); border-color:var(--header-accent,var(--red)); }
@@ -5368,28 +5627,28 @@ const CARD_CSS = `<style>
 .opt-select-compact { flex:1; min-width:0; background:transparent; border:none; padding:9px 0; }
 .opt-field { display:flex; align-items:center; gap:7px; width:100%;
   background:var(--bg-2); border:1px solid var(--border); border-radius:8px; padding:0 10px; height:100%; box-sizing:border-box; }
-.opt-field-label { font-size:0.6em; color:var(--muted); text-transform:uppercase; letter-spacing:1px; white-space:nowrap; }
+.opt-field-label { font-size:clamp(0.62em,0.95cqi,0.76em); color:var(--muted); text-transform:uppercase; letter-spacing:1px; white-space:nowrap; }
 .opt-select {
   flex:1; padding:7px 9px; border-radius:8px; border:1px solid var(--border);
-  background:var(--bg-2); color:var(--cream); font-size:0.78em; cursor:pointer;
+  background:var(--bg-2); color:var(--cream); font-size:clamp(0.82em,1.5cqi,1.0em); cursor:pointer;
 }
 .seg3 { display:flex; flex:1; min-width:0; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:var(--bg-2); }
 .seg3-btn {
   flex:1; min-width:0; display:flex; align-items:center; justify-content:center; gap:4px;
   padding:7px 4px; border:none; background:transparent; color:var(--muted);
-  font-size:0.78em; cursor:pointer; transition:all 0.13s; border-right:1px solid var(--border);
+  font-size:clamp(0.76em,1.4cqi,0.95em); cursor:pointer; transition:all 0.13s; border-right:1px solid var(--border);
 }
 .seg3-btn:last-child { border-right:none; }
 .seg3-btn:hover { background:var(--bg-3); color:var(--cream); }
 .seg3-btn.active { background:var(--accent); color:#fff; font-weight:600; }
-.seg3-lbl { font-size:0.86em; }
+.seg3-lbl { font-size:clamp(0.82em,1.5cqi,1.0em); }
 .header-glass.active { filter:drop-shadow(0 0 11px rgba(192,57,43,1)); transform:scale(1.08); }
 
 .mm-empty-hint { text-align:center; color:var(--muted); padding:24px 0; font-size:0.85em; }
 .mm-hint { font-size:0.66em; font-style:italic; color:#c8c8c8; margin-top:9px; line-height:1.4; }
 .btn-primary, .btn-secondary {
-  padding:7px 12px; border-radius:8px; border:none;
-  font-family:var(--font-sans); font-size:0.85em; font-weight:600;
+  padding:clamp(7px,1.2cqi,9px) clamp(12px,2cqi,15px); border-radius:8px; border:none;
+  font-family:var(--font-sans); font-size:clamp(0.85em,1.6cqi,1.05em); font-weight:600;
   cursor:pointer; transition:all 0.15s; white-space:nowrap;
 }
 .btn-primary { background:var(--accent); color:#fff; }
@@ -5398,21 +5657,22 @@ const CARD_CSS = `<style>
 .btn-secondary:hover { background:var(--bg-4); }
 
 .btn-icon {
-  padding:0; min-width:32px; border-radius:8px;
+  padding:0; min-width:clamp(32px,5cqi,40px); border-radius:8px;
   border:1px solid var(--border); background:var(--bg-2);
-  color:var(--cream); font-size:1.08em; cursor:pointer; transition:all 0.15s;
+  color:var(--cream); font-size:clamp(1.08em,2.1cqi,1.25em); cursor:pointer; transition:all 0.15s;
 }
 .btn-icon:hover { background:var(--bg-3); }
 .view-select {
   flex:1.8; min-width:0; padding:0 4px; border-radius:8px;
   border:1px solid var(--border); background:var(--bg-2);
-  color:var(--cream); font-family:var(--font-sans); font-size:0.8em;
+  color:var(--cream); font-family:var(--font-sans); font-size:clamp(0.8em,1.6cqi,1.0em);
   cursor:pointer; transition:all 0.15s;
 }
 .view-select:hover { background:var(--bg-3); }
 
 .env-row {
-  display:flex; gap:8px; align-items:stretch; padding:7px 14px;
+  display:flex; gap:clamp(6px,1.2cqi,10px); align-items:stretch;
+  padding:clamp(6px,1.1cqi,9px) clamp(14px,2.4cqi,22px);
   background:var(--bg-1); border-bottom:1px solid var(--border);
 }
 .env-box {
@@ -5420,30 +5680,30 @@ const CARD_CSS = `<style>
   padding:7px 8px; min-height:34px; box-sizing:border-box;
   background:var(--bg-2); border-radius:8px; border:1px solid var(--border);
 }
-.env-value { font-size:0.92em; font-weight:700; color:var(--cream); font-family:var(--font-serif); line-height:1; white-space:nowrap; }
+.env-value { font-size:clamp(0.92em,1.7cqi,1.1em); font-weight:700; color:var(--cream); font-family:var(--font-serif); line-height:1; white-space:nowrap; }
 .env-clickable { cursor:pointer; transition:all 0.15s; }
 .env-clickable:hover { background:var(--bg-3); border-color:var(--header-accent,var(--red)); }
 .env-clickable:active { transform:scale(0.97); }
 .env-empty { opacity:0.5; }
 /* Bouton « À ouvrir » (même gabarit que les zones T°/hygro) */
 .env-open { border:none; }
-.env-open .cork-icon { flex-shrink:0; }
-.env-open-label { font-size:0.84em; font-weight:600; color:var(--cream); white-space:nowrap; }
+.env-open .cork-icon { flex-shrink:0; width:clamp(15px,3cqi,21px); height:auto; }
+.env-open-label { font-size:clamp(0.82em,1.5cqi,1.0em); font-weight:600; color:var(--cream); white-space:nowrap; }
 .env-open-active { background:var(--accent); }
 .env-open-active .env-open-label { color:#fff; }
 .filters {
-  display:flex; gap:10px; padding:8px 14px;
+  display:flex; gap:clamp(8px,1.5cqi,14px); padding:clamp(8px,1.5cqi,11px) clamp(14px,2.4cqi,22px);
   background:var(--bg-1); border-bottom:1px solid var(--border);
 }
 .filter-group { display:flex; flex-direction:column; gap:4px; flex:1; }
 .filter-label {
-  font-size:0.69em; color:var(--muted); text-transform:uppercase;
+  font-size:clamp(0.7em,1.5cqi,0.95em); color:var(--muted); text-transform:uppercase;
   letter-spacing:1.5px; text-align:center;
 }
 .filter-select {
   width:100%; padding:6px 28px 6px 10px; border-radius:8px;
   border:1px solid var(--border); background:var(--bg-2);
-  color:var(--cream); font-family:var(--font-sans); font-size:0.92em;
+  color:var(--cream); font-family:var(--font-sans); font-size:clamp(0.92em,1.7cqi,1.12em);
   cursor:pointer; outline:none; -webkit-appearance:none; appearance:none;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%235A5A5A'/%3E%3C/svg%3E");
   background-repeat:no-repeat; background-position:right 10px center;
@@ -5455,8 +5715,8 @@ const CARD_CSS = `<style>
 .cellar { padding:12px 14px; display:flex; flex-direction:column; gap:2px; }
 .empty-state { text-align:center; padding:44px 20px; }
 .empty-glass { width:36px; margin:0 auto 12px; opacity:0.4; }
-.empty-title { font-family:var(--font-serif); color:var(--cream); font-size:1.15em; margin-bottom:5px; }
-.empty-sub { font-size:0.92em; color:var(--muted); }
+.empty-title { font-family:var(--font-serif); color:var(--cream); font-size:clamp(1.15em,2.5cqi,1.6em); margin-bottom:5px; }
+.empty-sub { font-size:clamp(0.92em,1.6cqi,1.1em); color:var(--muted); }
 
 .rack { margin-bottom:10px; animation:slide-in 0.3s ease-out both; }
 @keyframes slide-in { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
@@ -5467,13 +5727,22 @@ const CARD_CSS = `<style>
   border-radius:10px 10px 0 0; padding:8px 9px; min-height:0;
 }
 .rack-counters { display:flex; flex-direction:column; align-items:flex-end; gap:1px; min-width:24px; }
-.type-count { font-size:0.69em; font-weight:700; display:block; }
+.type-count { font-size:clamp(0.69em,1.1cqi,0.85em); font-weight:700; display:block; }
 .rack-actions { display:flex; flex-direction:column; gap:3px; margin-left:2px; }
-.icon-btn { background:none; border:none; cursor:pointer; font-size:0.85em; padding:2px; opacity:0.3; color:var(--cream); transition:opacity 0.15s; line-height:1; }
+.icon-btn { background:none; border:none; cursor:pointer; font-size:clamp(0.85em,1.5cqi,1.05em); padding:2px; opacity:0.3; color:var(--cream); transition:opacity 0.15s; line-height:1; }
 .icon-btn:hover { opacity:1; }
 
 .rack-dots { display:grid; flex:1; gap:4px 3px; align-items:stretch; overflow:visible; }
-.dot { height:80px; width:100%; cursor:pointer; transition:transform 0.12s, filter 0.12s; display:flex; align-items:center; justify-content:center; }
+/* Le .dot occupe toute la cellule (cible tactile pleine largeur) ; le SVG à
+   l'intérieur est plafonné et centré. Plus de hauteur fixe : elle suit la
+   bouteille (fluide). */
+.dot { width:100%; cursor:pointer; transition:transform 0.12s, filter 0.12s; display:flex; align-items:flex-end; justify-content:center; }
+/* Taille FLUIDE et progressive : le plafond grandit/diminue avec la largeur de la
+   CARTE (cqi) ; sous ce plafond, la largeur suit la colonne (1fr) → jamais de
+   débordement, quel que soit le nombre de colonnes ou la largeur d'écran. */
+.dot-svg-b { width:100%; max-width:clamp(17px, 5.6cqi, 34px); height:auto; }
+.dot-svg-c { width:100%; max-width:clamp(20px, 6.4cqi, 42px); height:auto; }
+.dot--c-alt .dot-svg-c { max-width:clamp(14px, 4.4cqi, 29px); }  /* tête-bêche pastille : plus petit */
 .dot--empty { opacity:0.3; }
 .dot--empty:hover { opacity:0.55; transform:scale(1.08); }
 .dot--filled { filter:drop-shadow(0 2px 4px var(--dot-glow,rgba(192,57,43,0.35))); }
@@ -5490,13 +5759,14 @@ const CARD_CSS = `<style>
   background:var(--bg-2); border:1px solid var(--border); border-radius:10px;
   padding:9px 11px;
 }
-.rp-label { font-size:0.8em; color:var(--cream); margin-bottom:6px; font-weight:600; }
+.rp-label { font-size:clamp(0.78em,1.4cqi,0.92em); color:var(--cream); margin-bottom:6px; font-weight:600; }
 .rp-track { height:7px; background:var(--bg-1); border-radius:4px; overflow:hidden; }
 .rp-fill { height:100%; width:0; background:linear-gradient(90deg,#2BA5C7,#1E88C7); border-radius:4px; transition:width 0.3s ease; }
 .dot--alt { transform:rotate(180deg); }
 .dot--alt:hover { transform:rotate(180deg) scale(1.12) translateY(2px); }
 .dot--alt.dot--selected { transform:rotate(180deg) scale(1.1); }
 .dot--dragging { opacity:0.25 !important; cursor:grabbing !important; }
+.dot--grab { transform:scale(1.3) translateY(-3px) !important; filter:drop-shadow(0 0 9px var(--gold)) !important; opacity:1 !important; position:relative; z-index:6; cursor:grabbing; }
 .dot--filled[draggable="true"] { cursor:grab; }
 .dot--drag-over { filter:drop-shadow(0 0 6px var(--accent)) !important; transform:scale(1.18) translateY(-2px); opacity:1 !important; }
 
@@ -5507,7 +5777,7 @@ const CARD_CSS = `<style>
 }
 .three-loading {
   display:flex; align-items:center; justify-content:center; gap:8px;
-  height:170px; color:var(--muted); font-size:0.92em;
+  height:170px; color:var(--muted); font-size:clamp(0.92em,1.6cqi,1.1em);
 }
 .view3d-stage .mm-spinner {
   display:inline-block; width:12px; height:12px;
@@ -5518,7 +5788,7 @@ const CARD_CSS = `<style>
 .t3-badge {
   position:absolute; transform:translateX(-50%); display:flex; align-items:center; gap:6px;
   background:rgba(14,12,10,0.82); border:1px solid #2E2620;
-  border-radius:8px; padding:3px 10px; font-size:0.77em; color:var(--cream);
+  border-radius:8px; padding:3px 10px; font-size:clamp(0.77em,1.4cqi,0.98em); color:var(--cream);
   letter-spacing:0.5px; pointer-events:none; backdrop-filter:blur(3px);
   white-space:nowrap;
 }
@@ -5536,9 +5806,9 @@ const CARD_CSS = `<style>
   background:linear-gradient(90deg,var(--wood-dk),var(--wood-md),var(--wood-lt),var(--wood-md),var(--wood-dk));
   border:1px solid var(--wood-lt); border-top:none; border-radius:0 0 10px 10px;
   display:flex; align-items:center; justify-content:center; gap:8px; padding:4px 12px;
-  font-size:0.69em; font-weight:600; color:var(--gold); letter-spacing:2px; text-transform:uppercase;
+  font-size:clamp(0.69em,1.4cqi,0.92em); font-weight:600; color:var(--gold); letter-spacing:2px; text-transform:uppercase;
 }
-.rack-pct { color:var(--wood-lt); font-size:0.62em; }
+.rack-pct { color:var(--wood-lt); font-size:clamp(0.62em,1.0cqi,0.78em); }
 
 /* ─── Footer détail : 4 boutons ─── */
 .mm-footer-detail { gap:5px; flex-wrap:wrap; }
@@ -5578,17 +5848,18 @@ const CARD_CSS = `<style>
   flex:1;
 }
 
-/* ─── Responsive mobile ─── */
-@media (max-width: 500px) {
+/* ─── Responsive : container queries (largeur de la CARTE, pas du viewport) ─── */
+/* Palier « étroit » : carte compacte (téléphone plein écran, demi-colonne…) */
+@container mm (max-width: 500px) {
   .cellar { padding:6px 5px; }
   .rack-frame { padding:4px 5px; }
-  .rack-dots { gap:2px !important; grid-auto-rows:auto !important; }
-  .dot-cell { height:auto !important; min-height:0 !important; }
-  .dot { height:50px !important; min-height:0 !important; }
-  .dot-svg-b { height:50px !important; width:auto !important; }
-  .dot-labels { height:auto !important; }
+  .rack-dots { gap:2px !important; }
+  /* Les bouteilles/pastilles se réduisent désormais en continu (clamp cqi) :
+     plus besoin de forcer une hauteur en pixels par palier. */
   .dot-lbl { font-size:0.69em; letter-spacing:0; }
   .header { padding:7px 8px 6px; gap:7px; }
+  .env-row { padding:5px 8px; gap:5px; }
+  .env-value { font-size:0.85em; }
   .header-glass { width:22px; }
   .header-name { font-size:0.69em; }
   .stat-value { font-size:0.92em; }
@@ -5597,6 +5868,28 @@ const CARD_CSS = `<style>
   .filter-select { font-size:0.85em; min-height:30px; padding:4px 24px 4px 8px; }
   .rack-label { font-size:0.54em; letter-spacing:1px; padding:3px 8px; }
 }
+/* Palier « très étroit » : petits téléphones / colonnes serrées */
+@container mm (max-width: 360px) {
+  .cellar { padding:5px 4px; }
+  .header { padding:6px 7px 5px; gap:5px; }
+  .env-row { padding:4px 7px; gap:4px; }
+  .env-open-label { font-size:0.72em; }
+  .header-tagline { display:none; }            /* gain de hauteur, le nom suffit */
+  .header-glass { width:20px; }
+  .header-name { font-size:0.62em; }
+  .stat-value { font-size:0.82em; }
+  .stat-label { font-size:0.5em; }
+  .stat { padding:3px; }
+  .ha-icons { gap:3px; }
+  .btn-icon { min-width:28px; font-size:1em; }
+  .btn-primary, .btn-secondary { font-size:0.72em; padding:5px; }
+  .filters { padding:6px 8px; gap:6px; }
+  .opt-btn { min-width:0; font-size:0.72em; padding:6px 8px; }   /* laisse rétrécir/empiler */
+  .opt-field { min-width:0; }
+}
+/* Transitions douces : l'en-tête, les filtres et les boutons grandissent en
+   continu avec la largeur de la carte via clamp(em, …cqi, em) sur les règles de
+   base — plus de palier-saut « large », et les bornes em respectent font_size. */
 </style>`;
 
 // ── CSS du modal ────────────────────────────────────────────────────────────────
@@ -6006,7 +6299,12 @@ console.info(
   "background:#2A2A2A;color:#C9A84C;font-weight:700;border-radius:0 3px 3px 0;padding:2px 0"
 );
 
-customElements.define("millesime-card", MillesimeCard);
+// Garde anti-double-définition : la carte est désormais auto-enregistrée par
+// l'intégration. Si une ancienne ressource Lovelace manuelle (/local/…) coexiste
+// encore, le second chargement échouerait sur "already defined" — on l'évite.
+if (!customElements.get("millesime-card")) {
+  customElements.define("millesime-card", MillesimeCard);
+}
 
 window.customCards = window.customCards || [];
 window.customCards.push({
