@@ -1,7 +1,7 @@
 # 🍷 Millésime — Cave à vin pour Home Assistant
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=flat-square)](https://github.com/hacs/integration)
-[![version](https://img.shields.io/badge/version-7.1.0-7B1D2E.svg?style=flat-square)](https://github.com/Redsklns/ha-millesime/releases)
+[![version](https://img.shields.io/badge/version-7.1.1-7B1D2E.svg?style=flat-square)](https://github.com/Redsklns/ha-millesime/releases)
 [![Offrir un verre de vin](https://img.shields.io/badge/🍷_Offrir_un_verre_de_vin-PayPal-7B1D2E.svg?style=flat-square)](https://paypal.me/Redsklns)
 
 **Millésime** transforme Home Assistant en gestionnaire de cave à vin complet : visualisez vos bouteilles dans une scène **3D réaliste**, scannez les étiquettes par **photo**, suivez la valeur de votre collection et tenez un **journal de dégustation**.
@@ -127,6 +127,11 @@ L'intégralité de Millésime a été conçue et développée en collaboration a
 ## 📝 Changelog
 
 *Les 30 derniers jours — l'historique complet est disponible dans les [releases GitHub](https://github.com/Redsklns/ha-millesime/releases).*
+
+### [7.1.1] — 2026-07
+Correctif critique de la 7.1.0.
+
+- 🐛 **Carte figée au chargement** : la refonte des profils de bouteilles avait supprimé par erreur trois définitions (`TYPE_SHAPE`, `REGION_SHAPES`, `shapeKindOf`) encore utilisées — `ReferenceError` au premier rendu, vues 2D/3D bloquées. Réinstallées et validées par un harnais d'exécution complet (Three.js réel + DOM) désormais systématique avant chaque livraison
 
 ### [7.1.0] — 2026-07
 Version fonctionnelle majeure : profil de Structure, nomenclature œnologique, header refondu, profils de bouteilles aux dimensions réelles.
