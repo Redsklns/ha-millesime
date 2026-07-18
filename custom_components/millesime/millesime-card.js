@@ -795,6 +795,30 @@ const BOTTLE_R = BOTTLE_METAS.bordeaux.r;
 // pour ne pas toucher les appelants.
 const _normProfile = (pts) => pts;
 
+// v7.0.2 : bordelaise par DÉFAUT pour rouges et blancs — c'est la forme la plus
+// répandue et celle attendue dans une cave à dominante bordelaise. Les autres
+// silhouettes restent choisies par la fiche (champ shape, détecté par Gemini ou
+// manuel) ou déduites de la RÉGION via shapeKindOf ci-dessous.
+const TYPE_SHAPE = { red: "bordeaux", white: "bordeaux", rose: "rose", sparkling: "champagne", dessert: "loire" };
+
+// Déduction de la silhouette par région (v7.0.2) — appliquée UNIQUEMENT quand la
+// fiche ne précise pas de forme : un bourgogne reste bourguignon, un alsace en
+// flûte, un sauternes en bordelaise… Testée sur le champ region normalisé
+// (minuscules sans accents). Source unique pour la 3D ET la 2D.
+const REGION_SHAPES = [
+  [/bourgogne|beaujolais|chablis|macon|mercurey|pommard|meursault|volnay|gevrey|nuits|beaune|rhone|chateauneuf|gigondas|vacqueyras|hermitage|cote.?rotie|cornas|crozes|saint.?joseph|condrieu/, "bourgogne"],
+  [/alsace|riesling|gewurz/, "flute"],
+  [/sauternes|barsac|monbazillac|loupiac|cadillac|sainte.?croix/, "bordeaux"],
+  [/champagne|cremant|prosecco|cava|bulle/, "champagne"],
+];
+const shapeKindOf = (wine) => {
+  if (wine?.shape && BOTTLE_PROFILES[wine.shape]) return wine.shape;   // choix explicite de la fiche
+  if ((wine?.type || "red") === "sparkling") return "champagne";       // verre épais obligatoire
+  const reg = normKey(wine?.region || "") + " " + normKey(wine?.appellation || "");
+  if (reg.trim()) for (const [re, kind] of REGION_SHAPES) if (re.test(reg)) return kind;
+  return TYPE_SHAPE[wine?.type || "red"] || "bordeaux";
+};
+
 
 // Projection à plat d'un profil 3D → silhouette SVG (viewBox 10×26) + repères
 // d'habillage calculés (largeur de col/fût, haut et bas d'épaule).
