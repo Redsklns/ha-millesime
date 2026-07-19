@@ -128,6 +128,12 @@ L'intégralité de Millésime a été conçue et développée en collaboration a
 
 *Les 30 derniers jours — l'historique complet est disponible dans les [releases GitHub](https://github.com/Redsklns/ha-millesime/releases).*
 
+### [7.1.4] — 2026-07
+Silhouette bordelaise affinée.
+
+- 🍾 **Épaule bordelaise redessinée d'après une bouteille réelle** : profil extrait au pixel près d'une photo de bordelaise standard, épaule en **arrondi doux et continu** (descente progressive du fût vers le col, sans cassure) au lieu de l'ancienne transition trop courte
+- 🍾 **Capsule fine** : la capsule épouse désormais le goulot au ras du verre, sans surépaisseur (fini le renflement visible)
+
 ### [7.1.3] — 2026-07
 Correctif critique du remplissage par IA (scan photo et recherche).
 
