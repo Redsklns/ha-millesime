@@ -1,5 +1,5 @@
 /**
- * Millésime Card v7.1.1
+ * Millésime Card v7.1.3
  * Cave à vin pour Home Assistant
  * - Recherche texte avec suggestions temps réel
  * - Lecture d'étiquette par photo (Gemini Vision)
@@ -7,7 +7,7 @@
  * - Journal de dégustation, recherche dans la cave, déplacement de casier
  */
 
-const MILLESIME_CARD_VERSION = "7.1.1";
+const MILLESIME_CARD_VERSION = "7.1.3";
 
 // ── Budget quotidien Gemini (free tier) ─────────────────────────────────────
 // Estimation codée en dur : ~250 requêtes/jour (Gemini 2.5 Flash, quotas
@@ -762,7 +762,7 @@ const safeUrl = url => /^https?:\/\//i.test(url ?? "") ? url : "#";
 const K_MM = 0.0113;                       // unités de scène par millimètre
 const BOTTLE_MM = {
   // Bordelaise 300×⌀75 — fût droit ~62 %, épaule haute et courte (galbe validé)
-  bordeaux: { H: 300, D: 75, pts: [[10,0], [0,22], [4,33], [8,36.5], [12,37.5], [186,37.5], [188,37.2], [191,36.4], [193,35.1], [196,33.3], [198,31.2], [201,28.8], [203,26.4], [205,23.9], [208,21.5], [210,19.4], [213,17.6], [215,16.3], [218,15.5], [220,15.2], [278,14.6], [284,14.4], [287,15.6], [296,15.6], [298,14.7], [300,14.5], [300,0]] },
+  bordeaux: { H: 300, D: 75, pts: [[10,0], [0,22], [4,33], [8,36.5], [12,37.5], [178,37.5], [180,37.2], [183,36.3], [185,34.9], [187,33], [189,30.7], [192,28.2], [194,25.6], [196,22.9], [199,20.4], [201,18.1], [203,16.2], [205,14.8], [208,13.9], [210,13.6], [276,13.2], [284,13.1], [287,14.3], [296,14.3], [298,13.5], [300,13.4], [300,0]] },
   // Bourguignonne 295×⌀80 — SANS épaule : fût conique, longue pente fuyante
   bourgogne: { H: 295, D: 80, pts: [[12,0], [0,24], [4,36], [9,39.5], [14,40], [130,40], [134,39.9], [138,39.8], [141,39.6], [145,39.5], [149,39.3], [153,39.1], [157,38.9], [160,38.7], [164,38.4], [168,38.2], [173,38], [177,37.5], [182,36.6], [187,35.5], [191,34.1], [196,32.4], [201,30.6], [205,28.6], [210,26.6], [215,24.6], [219,22.6], [224,20.8], [229,19.1], [233,17.7], [238,16.6], [243,15.7], [247,15.2], [252,15], [280,14.5], [285,14.3], [288,15.5], [293,15.5], [295,14.5], [295,0]] },
   // Champenoise 310×⌀88 — verre épais, piqûre profonde, pente très longue
@@ -1658,11 +1658,13 @@ class MillesimeCard extends HTMLElement {
 
   _openModal(type, opts = {}) {
     this._closeModal();
-    // v7.0.1 : ouvrir une fiche de vin quitte la surbrillance en cours —
-    // c'était la seule vue sans porte de sortie évidente (la surbrillance
-    // persistait jusqu'au prochain tap sur une bouteille).
-    if (type === "detail" && this._selected) {
+    // v7.0.1 / v7.1.2 : ouvrir une fiche de vin quitte TOUTE surbrillance en
+    // cours — la localisation d'une bouteille (_selected) ET le filtre d'occasion
+    // (_occasionFilter, qui grise les bouteilles hors occasion). C'était la seule
+    // vue sans porte de sortie évidente.
+    if (type === "detail" && (this._selected || this._occasionFilter)) {
       this._selected = null;
+      this._occasionFilter = "";
       this._render();
     }
     const style = document.createElement("style");
@@ -6192,7 +6194,7 @@ class MillesimeCard extends HTMLElement {
     // Cotes d'accessoires par forme — millimètres réels convertis (K_MM) :
     // capsule couvrant la bague, bouchon affleurant, collerette décorative,
     // étiquette centrée sur le fût cylindrique de CHAQUE silhouette.
-    const setBordeaux  = mkSet("bordeaux",  { capR: 0.19, capR2: 0.172, capH: 0.316, capY: 3.249, corkR: 0.136, corkH: 0.136, corkY: 3.333, colR: 0.181,   colH: 0.203, colY: 2.904, labelH: 1.073, labelY: 1.158 });
+    const setBordeaux  = mkSet("bordeaux",  { capR: 0.19, capR2: 0.172, capH: 0.542, capY: 3.119, corkR: 0.136, corkH: 0.136, corkY: 3.333, colR: 0.181,   colH: 0.203, colY: 2.768, labelH: 1.073, labelY: 1.158 });
     const setLoire     = mkSet("loire",     { capR: 0.185, capR2: 0.168, capH: 0.328, capY: 3.35, corkR: 0.132, corkH: 0.136, corkY: 3.424, colR: 0.175, colH: 0.203, colY: 3.062, labelH: 1.073, labelY: 1.102 });
     const setFlute     = mkSet("flute",     { capR: 0.176, capR2: 0.16, capH: 0.328, capY: 3.915, corkR: 0.13, corkH: 0.136, corkY: 3.989, colR: 0.168, colH: 0.203, colY: 3.627, labelH: 0.96, labelY: 0.989 });
     const setRose      = mkSet("rose",      { capR: 0.18, capR2: 0.163, capH: 0.35, capY: 3.226, corkR: 0.13, corkH: 0.136, corkY: 3.311, colR: 0.169,   colH: 0.203, colY: 2.881, labelH: 1.017, labelY: 1.051 });
@@ -6548,17 +6550,21 @@ class MillesimeCard extends HTMLElement {
     };
     // v7.0.1 : silhouettes des emplacements vides nettement plus discrètes —
     // les « ombres » sombres gênaient la lecture, surtout en superposition
-    const emptyMat = new THREE.MeshBasicMaterial({ color: 0x202020, transparent: true, opacity: 0.32, side: THREE.DoubleSide });
+    const emptyMat = new THREE.MeshBasicMaterial({ color: 0x202020, transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthWrite: false });
     const ringMat  = new THREE.LineBasicMaterial({ color: 0x3a3a3a, transparent: true, opacity: 0.42 });
-    // v7.1.0 : en SUPERPOSITION, les fantômes des couches AU-DESSUS de la
-    // rangée de base sont invisibles au repos (l'accumulation d'ombres gênait
-    // la lecture) — ils restent tappables (le raycaster ignore l'opacité) et
-    // réapparaissent le temps d'un glisser/déposer pour montrer les cibles.
-    const emptyMatUp = new THREE.MeshBasicMaterial({ color: 0x202020, transparent: true, opacity: 0, side: THREE.DoubleSide });
-    const ringMatUp  = new THREE.LineBasicMaterial({ color: 0x3a3a3a, transparent: true, opacity: 0 });
+    // v7.1.0 / v7.1.2 : en SUPERPOSITION, les fantômes des couches AU-DESSUS de
+    // la rangée de base sont MASQUÉS (visible=false) au repos — l'opacité 0 ne
+    // suffisait pas : le matériau écrivait quand même dans le depth buffer et
+    // occultait le fond, laissant une trace sombre disgracieuse (bug v7.1.x).
+    // Ils restent tappables (le raycaster interroge la liste des cibles, pas la
+    // visibilité) et réapparaissent le temps d'un glisser/déposer.
+    const emptyMatUp = new THREE.MeshBasicMaterial({ color: 0x202020, transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthWrite: false });
+    const ringMatUp  = new THREE.LineBasicMaterial({ color: 0x3a3a3a, transparent: true, opacity: 0.42 });
+    const _upperGhosts = [];   // meshes + rings des couches hautes (toggle groupé)
+    let _ghostsShown = false;  // état courant (drag en cours ?) pour le picking
     const showUpperGhosts = (on) => {
-      emptyMatUp.opacity = on ? 0.32 : 0;
-      ringMatUp.opacity  = on ? 0.42 : 0;
+      _ghostsShown = on;
+      for (const o of _upperGhosts) o.visible = on;
     };
     const goldMat  = new THREE.MeshBasicMaterial({ color: 0xC9A84C });
 
@@ -6681,6 +6687,9 @@ class MillesimeCard extends HTMLElement {
             ring.position.set(x, shelfY + 0.013, stag + gdz);
             if (parity === 1) disc.rotation.y = ring.rotation.y = Math.PI;
             disc.userData = { empty: true, slot: i, rackId: rack.id, base: { x, shelfY, fi, i, parity }, ring };
+            // v7.1.2 : couche haute masquée au repos (visible=false → aucun rendu,
+            // aucune écriture profondeur), révélée pendant le drag & drop
+            if (upper) { disc.visible = false; ring.visible = false; disc._ghUp = true; ring._ghUp = true; _upperGhosts.push(disc, ring); }
             pickables.push(disc);
             scene.add(disc, ring);
             continue;
@@ -7046,7 +7055,18 @@ class MillesimeCard extends HTMLElement {
     const pickAt = (e, objs) => {
       setPtr(e);
       ray.setFromCamera(ptr, cam);
-      return ray.intersectObjects(objs, false)[0];
+      // v7.1.2 : les fantômes des couches hautes sont visible=false (pour ne pas
+      // laisser de trace de profondeur) mais doivent rester TAPPABLES. Le
+      // raycaster de three ignore les objets invisibles → on les rend visibles
+      // le temps du test d'intersection, puis on restaure leur état.
+      const hidden = objs.filter(o => !o.visible);
+      for (const o of hidden) o.visible = true;
+      const hit = ray.intersectObjects(objs, false)[0];
+      // Restaure l'état réel : les fantômes hauts (marqués _ghUp) redeviennent
+      // invisibles SAUF pendant un drag (_ghostsShown) ; tout autre objet
+      // temporairement révélé pour le test reprend sa visibilité
+      for (const o of hidden) o.visible = o._ghUp ? _ghostsShown : false;
+      return hit;
     };
 
     // Clic simple : "click" est synthétisé par iOS après un vrai tap
