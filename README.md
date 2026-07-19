@@ -1,7 +1,7 @@
 # 🍷 Millésime — Cave à vin pour Home Assistant
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=flat-square)](https://github.com/hacs/integration)
-[![version](https://img.shields.io/badge/version-7.1.1-7B1D2E.svg?style=flat-square)](https://github.com/Redsklns/ha-millesime/releases)
+[![version](https://img.shields.io/badge/version-7.1.3-7B1D2E.svg?style=flat-square)](https://github.com/Redsklns/ha-millesime/releases)
 [![Offrir un verre de vin](https://img.shields.io/badge/🍷_Offrir_un_verre_de_vin-PayPal-7B1D2E.svg?style=flat-square)](https://paypal.me/Redsklns)
 
 **Millésime** transforme Home Assistant en gestionnaire de cave à vin complet : visualisez vos bouteilles dans une scène **3D réaliste**, scannez les étiquettes par **photo**, suivez la valeur de votre collection et tenez un **journal de dégustation**.
@@ -127,6 +127,18 @@ L'intégralité de Millésime a été conçue et développée en collaboration a
 ## 📝 Changelog
 
 *Les 30 derniers jours — l'historique complet est disponible dans les [releases GitHub](https://github.com/Redsklns/ha-millesime/releases).*
+
+### [7.1.3] — 2026-07
+Correctif critique du remplissage par IA (scan photo et recherche).
+
+- 🐛 **Erreur 404 « service_unavailable » sur tous les modèles Gemini** : les noms de modèles étaient codés en dur et n'existaient pas sur toutes les clés API, cassant le scan photo et la recherche. L'intégration **découvre désormais dynamiquement** les modèles réellement disponibles pour la clé de l'utilisateur (au démarrage et à chaque changement de clé), et choisit automatiquement le meilleur pour le texte et la vision. Repli sur les modèles stables (2.5 flash) si la découverte échoue
+
+### [7.1.2] — 2026-07
+Correctifs de rendu et d'ergonomie.
+
+- 🐛 **Surbrillance des Occasions** : ouvrir la fiche d'un vin lève désormais aussi le filtre d'occasion (les bouteilles grisées reviennent à la normale) — plus seulement la localisation d'une bouteille
+- 🐛 **Superposition** : suppression de la trace sombre résiduelle des emplacements vides des couches supérieures (les silhouettes masquées écrivaient dans le tampon de profondeur et occultaient le fond) — masquage réel `visible=false`, les emplacements restent tappables et réapparaissent pendant un glisser/déposer
+- 🍾 **Bordelaise** : col allongé et **capsule longue (48 mm)** façon cru de garde, calqués sur des bouteilles réelles — encombrement et 5 autres formes inchangés
 
 ### [7.1.1] — 2026-07
 Correctif critique de la 7.1.0.
