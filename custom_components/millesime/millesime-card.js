@@ -1,5 +1,5 @@
 /**
- * Millésime Card v7.1.3
+ * Millésime Card v7.1.4
  * Cave à vin pour Home Assistant
  * - Recherche texte avec suggestions temps réel
  * - Lecture d'étiquette par photo (Gemini Vision)
@@ -7,7 +7,7 @@
  * - Journal de dégustation, recherche dans la cave, déplacement de casier
  */
 
-const MILLESIME_CARD_VERSION = "7.1.3";
+const MILLESIME_CARD_VERSION = "7.1.4";
 
 // ── Budget quotidien Gemini (free tier) ─────────────────────────────────────
 // Estimation codée en dur : ~250 requêtes/jour (Gemini 2.5 Flash, quotas
@@ -762,7 +762,7 @@ const safeUrl = url => /^https?:\/\//i.test(url ?? "") ? url : "#";
 const K_MM = 0.0113;                       // unités de scène par millimètre
 const BOTTLE_MM = {
   // Bordelaise 300×⌀75 — fût droit ~62 %, épaule haute et courte (galbe validé)
-  bordeaux: { H: 300, D: 75, pts: [[10,0], [0,22], [4,33], [8,36.5], [12,37.5], [178,37.5], [180,37.2], [183,36.3], [185,34.9], [187,33], [189,30.7], [192,28.2], [194,25.6], [196,22.9], [199,20.4], [201,18.1], [203,16.2], [205,14.8], [208,13.9], [210,13.6], [276,13.2], [284,13.1], [287,14.3], [296,14.3], [298,13.5], [300,13.4], [300,0]] },
+  bordeaux: { H: 300, D: 75, pts: [[10,0], [2,19.3], [4,26], [7,31.7], [11,34.7], [15,36.3], [22,37.4], [46,37.5], [70,37.3], [94,37.5], [118,37.3], [142,37.5], [166,37.5], [168,37.5], [171,37.5], [174,37.5], [177,37.5], [180,37.1], [183,36.8], [186,36.2], [189,35.3], [192,34.3], [195,33], [198,31.3], [201,29.3], [204,27.1], [207,24.4], [210,21.5], [213,19], [216,17.4], [219,16.1], [222,15.4], [225,15.2], [228,15], [236,14.8], [244,14.6], [252,14.4], [262,13.8], [272,13.8], [280,13.6], [285,14.8], [289,14.8], [293,13.7], [296,13.5], [298,12.1], [300,0]] },
   // Bourguignonne 295×⌀80 — SANS épaule : fût conique, longue pente fuyante
   bourgogne: { H: 295, D: 80, pts: [[12,0], [0,24], [4,36], [9,39.5], [14,40], [130,40], [134,39.9], [138,39.8], [141,39.6], [145,39.5], [149,39.3], [153,39.1], [157,38.9], [160,38.7], [164,38.4], [168,38.2], [173,38], [177,37.5], [182,36.6], [187,35.5], [191,34.1], [196,32.4], [201,30.6], [205,28.6], [210,26.6], [215,24.6], [219,22.6], [224,20.8], [229,19.1], [233,17.7], [238,16.6], [243,15.7], [247,15.2], [252,15], [280,14.5], [285,14.3], [288,15.5], [293,15.5], [295,14.5], [295,0]] },
   // Champenoise 310×⌀88 — verre épais, piqûre profonde, pente très longue
@@ -6194,7 +6194,7 @@ class MillesimeCard extends HTMLElement {
     // Cotes d'accessoires par forme — millimètres réels convertis (K_MM) :
     // capsule couvrant la bague, bouchon affleurant, collerette décorative,
     // étiquette centrée sur le fût cylindrique de CHAQUE silhouette.
-    const setBordeaux  = mkSet("bordeaux",  { capR: 0.19, capR2: 0.172, capH: 0.542, capY: 3.119, corkR: 0.136, corkH: 0.136, corkY: 3.333, colR: 0.181,   colH: 0.203, colY: 2.768, labelH: 1.073, labelY: 1.158 });
+    const setBordeaux  = mkSet("bordeaux",  { capR: 0.167, capR2: 0.165, capH: 0.542, capY: 3.119, corkR: 0.136, corkH: 0.136, corkY: 3.333, colR: 0.181,   colH: 0.203, colY: 2.768, labelH: 1.073, labelY: 1.158 });
     const setLoire     = mkSet("loire",     { capR: 0.185, capR2: 0.168, capH: 0.328, capY: 3.35, corkR: 0.132, corkH: 0.136, corkY: 3.424, colR: 0.175, colH: 0.203, colY: 3.062, labelH: 1.073, labelY: 1.102 });
     const setFlute     = mkSet("flute",     { capR: 0.176, capR2: 0.16, capH: 0.328, capY: 3.915, corkR: 0.13, corkH: 0.136, corkY: 3.989, colR: 0.168, colH: 0.203, colY: 3.627, labelH: 0.96, labelY: 0.989 });
     const setRose      = mkSet("rose",      { capR: 0.18, capR2: 0.163, capH: 0.35, capY: 3.226, corkR: 0.13, corkH: 0.136, corkY: 3.311, colR: 0.169,   colH: 0.203, colY: 2.881, labelH: 1.017, labelY: 1.051 });
