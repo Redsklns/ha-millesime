@@ -1,8 +1,8 @@
-"""Millésime v7.1.1 — Cave à Vin pour Home Assistant.
+"""Millésime v7.1.3 — Cave à Vin pour Home Assistant.
 
-Recherche texte : gemini-3.1-flash-lite (tier gratuit)
-Lecture photo   : gemini-3-flash (tier gratuit)
-Repli           : génération 2.5 si modèle 3 indisponible (404)
+Modèles Gemini  : découverts dynamiquement au démarrage (GET /models sur la clé
+                  de l'utilisateur), avec repli sur les modèles stables 2.5 flash.
+                  Évite les 404 quand un nom « de pointe » n'existe pas sur la clé.
 Sans clé        : Open Food Facts (illimité)
 
 Modèle de données : cellars[] (multi-caves) + wines[] + slots[] + racks[].
@@ -36,20 +36,104 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN    = "millesime"
 PLATFORMS = ["sensor"]
 DATA_FILE = "millesime_data.json"
-VERSION   = "7.1.1"
+VERSION   = "7.1.3"
 
 OFF_UA       = f"Millesime-HA/{VERSION} (github.com/Redsklns/ha-millesime)"
 # Deux modèles séparés = deux pools de quota indépendants (free tier)
 # Texte  : gemini-3.1-flash-lite — léger, rapide (tier gratuit)
 # Photo  : gemini-3-flash        — meilleur en vision (tier gratuit)
 # Repli automatique sur la génération 2.5 si le modèle 3 est indisponible (404).
-GEMINI_TEXT_MODEL      = "gemini-3.1-flash-lite"
-GEMINI_VISION_MODEL    = "gemini-3-flash"
-GEMINI_TEXT_FALLBACK   = "gemini-2.5-flash-lite"
-GEMINI_VISION_FALLBACK = "gemini-2.5-flash"
+# ── Modèles Gemini : découverte dynamique (v7.1.3) ───────────────────────────
+# PROBLÈME résolu : coder en dur des noms « de pointe » (gemini-3-flash…) casse
+# le scan avec un 404 chez les comptes qui n'y ont pas accès. SOLUTION : au
+# démarrage on interroge l'API pour la liste RÉELLE des modèles de la clé, et on
+# choisit automatiquement les meilleurs. Ces constantes ne sont plus que le
+# REPLI si la découverte échoue — volontairement des modèles STABLES et
+# largement disponibles (2.5), pas des noms fragiles.
+GEMINI_TEXT_MODEL      = "gemini-2.5-flash"       # repli texte (stable, dispo free tier)
+GEMINI_VISION_MODEL    = "gemini-2.5-flash"       # repli vision (stable, multimodal)
+GEMINI_TEXT_FALLBACK   = "gemini-2.5-flash-lite"  # repli léger
+GEMINI_VISION_FALLBACK = "gemini-2.5-flash-lite"
 GEMINI_BASE_URL    = "https://generativelanguage.googleapis.com/v1beta/models/"
 # Alias pour compatibilité
 GEMINI_MODEL = GEMINI_TEXT_MODEL
+
+# Ordre de PRÉFÉRENCE (du meilleur au plus léger) : à la découverte, on retient
+# le 1er modèle réellement disponible correspondant à chaque catégorie. On liste
+# plusieurs générations pour survivre aux évolutions de nommage de Google —
+# celles qui n'existent pas sont simplement ignorées.
+_PREF_TEXT = [
+    "gemini-3.5-flash", "gemini-3.1-flash", "gemini-3-flash",
+    "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite",
+]
+_PREF_VISION = [   # modèles multimodaux (lecture d'étiquette)
+    "gemini-3.5-flash", "gemini-3.1-flash", "gemini-3-flash",
+    "gemini-2.5-flash", "gemini-2.5-flash-lite",
+]
+# Résultat de la découverte, rempli au démarrage (None = pas encore fait)
+# Chaîne unique de résolution utilisée par tous les appels.
+_GEMINI_MODELS: dict = {"text": None, "vision": None, "discovered": False}
+
+
+async def _discover_gemini_models(hass: HomeAssistant, api_key: str) -> None:
+    """Interroge GET /models pour la clé donnée et sélectionne les meilleurs
+    modèles texte et vision RÉELLEMENT disponibles. Silencieux et non bloquant :
+    en cas d'échec, les listes de repli stables (2.5) restent en vigueur."""
+    if not api_key:
+        return
+    session = async_get_clientsession(hass)
+    try:
+        async with session.get(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            params={"key": api_key, "pageSize": "200"},
+            timeout=15,
+        ) as resp:
+            if resp.status != 200:
+                _LOGGER.warning("Millésime — découverte modèles Gemini : HTTP %s, repli sur modèles stables", resp.status)
+                return
+            data = await resp.json(content_type=None)
+    except Exception as exc:
+        _LOGGER.warning("Millésime — découverte modèles Gemini impossible (%s), repli stable", exc)
+        return
+
+    # Modèles supportant generateContent (on ignore embeddings, imagen, veo…)
+    available: set[str] = set()
+    for m in data.get("models", []):
+        name = (m.get("name") or "").split("/")[-1]
+        methods = m.get("supportedGenerationMethods") or m.get("supportedActions") or []
+        if name and (not methods or "generateContent" in methods):
+            available.add(name)
+    if not available:
+        _LOGGER.warning("Millésime — découverte modèles : liste vide, repli stable")
+        return
+
+    def _pick(prefs: list[str], fallback: str) -> list[str]:
+        # Modèles préférés réellement présents, dans l'ordre ; + repli garanti
+        chosen = [m for m in prefs if m in available]
+        if fallback in available and fallback not in chosen:
+            chosen.append(fallback)
+        # Filet ultime : au moins un flash 2.5 quelconque présent
+        if not chosen:
+            chosen = [m for m in sorted(available) if "flash" in m][:2] or sorted(available)[:1]
+        return chosen
+
+    _GEMINI_MODELS["text"] = _pick(_PREF_TEXT, GEMINI_TEXT_FALLBACK)
+    _GEMINI_MODELS["vision"] = _pick(_PREF_VISION, GEMINI_VISION_FALLBACK)
+    _GEMINI_MODELS["discovered"] = True
+    _LOGGER.info(
+        "Millésime — modèles Gemini découverts : texte=%s | vision=%s",
+        _GEMINI_MODELS["text"], _GEMINI_MODELS["vision"],
+    )
+
+
+def _text_models() -> list[str]:
+    """Chaîne de modèles texte à essayer (découverte si dispo, sinon repli stable)."""
+    return _GEMINI_MODELS["text"] or [GEMINI_TEXT_MODEL, GEMINI_TEXT_FALLBACK]
+
+
+def _vision_models() -> list[str]:
+    """Chaîne de modèles vision à essayer (découverte si dispo, sinon repli stable)."""
+    return _GEMINI_MODELS["vision"] or [GEMINI_VISION_MODEL, GEMINI_VISION_FALLBACK]
 
 # ── Cache ─────────────────────────────────────────────────────────────────────
 # Clé texte : évite de refrapper Gemini sur chaque frappe clavier
@@ -485,7 +569,7 @@ async def _gemini_search_text(
     }
     data = None
     last_code = ERR_UNAVAILABLE
-    for _model in (GEMINI_TEXT_MODEL, GEMINI_TEXT_FALLBACK):
+    for _model in _text_models():
         try:
             async with session.post(
                 f"{GEMINI_BASE_URL}{_model}:generateContent",
@@ -552,7 +636,7 @@ async def _gemini_json(
         },
     }
     data = None
-    for _model in (GEMINI_TEXT_MODEL, GEMINI_TEXT_FALLBACK):
+    for _model in _text_models():
         try:
             async with session.post(
                 f"{GEMINI_BASE_URL}{_model}:generateContent",
@@ -752,7 +836,7 @@ async def _gemini_analyze_photo(
         },
     }
     # Modèles à essayer en cascade : vision d'abord, lite en fallback
-    _PHOTO_MODELS = [GEMINI_VISION_MODEL, GEMINI_VISION_FALLBACK, GEMINI_TEXT_FALLBACK]
+    _PHOTO_MODELS = _vision_models()
     data = None
     last_code = ERR_UNAVAILABLE
 
@@ -865,7 +949,7 @@ async def _gemini_pair_food(
         },
     }
     data = None
-    for _model in (GEMINI_TEXT_MODEL, GEMINI_TEXT_FALLBACK):
+    for _model in _text_models():
         try:
             async with session.post(
                 f"{GEMINI_BASE_URL}{_model}:generateContent",
@@ -1202,6 +1286,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+
+    # ── Découverte dynamique des modèles Gemini (v7.1.3) ──────────────────────
+    # En tâche de fond pour ne pas retarder le démarrage : tant qu'elle n'a pas
+    # répondu, les appels utilisent le repli stable (2.5). Corrige le 404 en
+    # cascade quand les noms de modèles codés en dur n'existent pas sur la clé.
+    if gemini_key:
+        hass.async_create_task(_discover_gemini_models(hass, gemini_key))
 
     # ── Auto-service de la carte Lovelace ─────────────────────────────────────
     # La carte est servie depuis le dossier de l'intégration (mis à jour par HACS)
@@ -1555,26 +1646,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "contents": [{"parts": [{"text": price_prompt}]}],
             "generationConfig": {"temperature": 0.1, "maxOutputTokens": 32},
         }
-        try:
-            async with session.post(
-                f"{GEMINI_BASE_URL}{GEMINI_TEXT_MODEL}:generateContent",
-                params={"key": gkey},
-                json=body,
-                headers={"Content-Type": "application/json"},
-                timeout=15,
-            ) as resp:
-                if resp.status != 200:
-                    connection.send_result(msg["id"], {"price": 0, "error": _gemini_error_code(resp.status)})
+        # v7.1.3 : mêmes modèles découverts que le reste, avec repli 404 → modèle suivant
+        last_err = ERR_UNAVAILABLE
+        for _model in _text_models():
+            try:
+                async with session.post(
+                    f"{GEMINI_BASE_URL}{_model}:generateContent",
+                    params={"key": gkey},
+                    json=body,
+                    headers={"Content-Type": "application/json"},
+                    timeout=15,
+                ) as resp:
+                    if resp.status == 404:
+                        last_err = ERR_UNAVAILABLE
+                        continue                       # modèle absent → suivant
+                    if resp.status != 200:
+                        connection.send_result(msg["id"], {"price": 0, "error": _gemini_error_code(resp.status)})
+                        return
+                    data_r = await resp.json(content_type=None)
+                    raw = (data_r.get("candidates", [{}])[0]
+                           .get("content", {}).get("parts", [{}])[0].get("text", "0"))
+                    raw = re.sub(r"[^0-9.,]", "", raw.strip()).replace(",", ".")
+                    price = round(float(raw), 2) if raw else 0
+                    connection.send_result(msg["id"], {"price": price, "error": None})
                     return
-                data_r = await resp.json(content_type=None)
-                raw = (data_r.get("candidates", [{}])[0]
-                       .get("content", {}).get("parts", [{}])[0].get("text", "0"))
-                raw = re.sub(r"[^0-9.,]", "", raw.strip()).replace(",", ".")
-                price = round(float(raw), 2) if raw else 0
-                connection.send_result(msg["id"], {"price": price, "error": None})
-        except Exception as exc:
-            _LOGGER.warning("estimate_price erreur: %s", exc)
-            connection.send_result(msg["id"], {"price": 0, "error": ERR_UNAVAILABLE})
+            except Exception as exc:
+                _LOGGER.warning("estimate_price erreur (%s): %s", _model, exc)
+                last_err = ERR_UNAVAILABLE
+        connection.send_result(msg["id"], {"price": 0, "error": last_err})
 
     websocket_api.async_register_command(hass, ws_estimate_price)
 
@@ -2208,7 +2307,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "update_floor",       svc_update_rack)
     hass.services.async_register(DOMAIN, "remove_floor",       svc_remove_rack)
 
-    mode = "Gemini 1.5 Flash + photo" if gemini_key else "Open Food Facts"
+    mode = "Gemini (modèles auto-découverts) + photo" if gemini_key else "Open Food Facts"
     _LOGGER.info("Millésime v%s démarré — %s", VERSION, mode)
     return True
 
@@ -2217,7 +2316,13 @@ async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> Non
     new_key = (entry.options.get("gemini_api_key") or "").strip()
     hass.data[DOMAIN][entry.entry_id]["gemini_key"] = new_key
     _SEARCH_CACHE.clear()
-    _LOGGER.info("Millésime — clé Gemini mise à jour, cache vidé")
+    # v7.1.3 : la clé a changé → re-découvrir les modèles disponibles pour elle
+    # (réinitialise la sélection ; repli stable tant que la découverte n'a pas répondu)
+    _GEMINI_MODELS["text"] = _GEMINI_MODELS["vision"] = None
+    _GEMINI_MODELS["discovered"] = False
+    if new_key:
+        hass.async_create_task(_discover_gemini_models(hass, new_key))
+    _LOGGER.info("Millésime — clé Gemini mise à jour, cache vidé, modèles à redécouvrir")
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
