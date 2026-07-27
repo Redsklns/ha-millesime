@@ -1,4 +1,4 @@
-"""Millésime v7.1.5 — Cave à Vin pour Home Assistant.
+"""Millésime v7.1.6 — Cave à Vin pour Home Assistant.
 
 Modèles Gemini  : découverts dynamiquement au démarrage (GET /models sur la clé
                   de l'utilisateur), avec repli sur les modèles stables 2.5 flash.
@@ -36,7 +36,7 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN    = "millesime"
 PLATFORMS = ["sensor"]
 DATA_FILE = "millesime_data.json"
-VERSION   = "7.1.5"
+VERSION   = "7.1.6"
 
 OFF_UA       = f"Millesime-HA/{VERSION} (github.com/Redsklns/ha-millesime)"
 # Deux modèles séparés = deux pools de quota indépendants (free tier)
@@ -181,6 +181,7 @@ ERR_PARSE_ERROR    = "parse_error"      # JSON invalide dans la réponse
 # diagnostiquer pour l'utilisateur comme pour le support. On les sépare.
 ERR_NO_MODEL       = "no_model"         # tous les modèles ont répondu 404
 ERR_TIMEOUT        = "timeout"          # délai dépassé sur tous les modèles
+ERR_TRUNCATED      = "truncated"        # réponse coupée (budget de sortie atteint)
 
 DEFAULT_DATA: dict = {
     "cellars": [{"id": "main", "name": "Millésime", "racks": []}],
@@ -489,6 +490,58 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _gemini_text(data: dict) -> tuple[str, str]:
+    """Texte utile d'une réponse Gemini + finishReason (v7.1.6).
+
+    POURQUOI : le code lisait `parts[0].text`, ce qui est faux dès que le modèle
+    raisonne. L'API peut placer en première position une partie de RÉFLEXION
+    (marquée `thought: true`) ou une partie au texte VIDE portant la signature
+    de raisonnement — on récupérait alors une chaîne vide et tout finissait en
+    « parse_error ». On parcourt donc TOUTES les parties, on écarte celles de
+    réflexion, et on concatène le reste.
+    """
+    cand = (data.get("candidates") or [{}])[0] or {}
+    finish = cand.get("finishReason") or ""
+    parts = (cand.get("content") or {}).get("parts") or []
+    chunks = []
+    for p in parts:
+        if not isinstance(p, dict) or p.get("thought"):
+            continue                       # partie de raisonnement → jamais la réponse
+        t = p.get("text")
+        if isinstance(t, str) and t.strip():
+            chunks.append(t)
+    return "".join(chunks), finish
+
+
+def _gemini_payload(data: dict):
+    """JSON d'une réponse Gemini, tolérant aux enrobages (v7.1.6).
+
+    Gère les cas réels observés : blocs ```json, préfixe « THOUGHT: » laissé
+    dans le texte par certains modèles, et texte parasite avant/après l'objet.
+    Lève ValueError avec un motif exploitable dans les logs.
+    """
+    raw, finish = _gemini_text(data)
+    if not raw.strip():
+        raise ValueError(f"réponse vide (finishReason={finish or '?'})")
+    txt = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    txt = re.sub(r"\s*```$", "", txt).strip()
+    if "THOUGHT:" in txt:                  # raisonnement laissé en clair
+        txt = txt.split("THOUGHT:")[-1].strip()
+    try:
+        return json.loads(txt)
+    except Exception:
+        pass
+    # Dernier recours : isoler le plus grand bloc { … } ou [ … ]
+    for op, cl in (("{", "}"), ("[", "]")):
+        i, j = txt.find(op), txt.rfind(cl)
+        if i != -1 and j > i:
+            try:
+                return json.loads(txt[i:j + 1])
+            except Exception:
+                continue
+    raise ValueError(f"JSON introuvable (finishReason={finish or '?'}, {len(raw)} car.)")
+
+
 def _parse_gemini_response(raw: str, source: str) -> tuple[list[dict], str | None]:
     """Parse la réponse JSON de Gemini.
 
@@ -690,12 +743,7 @@ async def _gemini_search_text(
         return [], code or ERR_UNAVAILABLE
     _bump_ai_usage(hass, data)
     try:
-        raw = (
-            data.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [{}])[0]
-            .get("text", "")
-        )
+        raw, _finish = _gemini_text(data)          # v7.1.6 : toutes les parties
         results, err = _parse_gemini_response(raw, f"texte:'{query}'")
         _LOGGER.info("Gemini texte: %d résultat(s) pour '%s'", len(results), query)
         return results, err
@@ -736,13 +784,12 @@ async def _gemini_json(
         return None, {}, code or ERR_UNAVAILABLE
     usage = _bump_ai_usage(hass, data)
     try:
-        raw = (data.get("candidates", [{}])[0].get("content", {})
-                   .get("parts", [{}])[0].get("text", ""))
-        return json.loads(raw), usage, None
+        return _gemini_payload(data), usage, None   # v7.1.6 : lecture robuste
     except Exception as exc:
-        # Réponse vide/tronquée : on le dit clairement plutôt que « indisponible »
-        finish = (data.get("candidates", [{}])[0] or {}).get("finishReason", "")
-        _LOGGER.warning("Gemini sommelier: JSON invalide (%s, finishReason=%s)", exc, finish)
+        _, finish = _gemini_text(data)
+        _LOGGER.warning("Gemini sommelier : réponse illisible (%s)", exc)
+        if finish == "MAX_TOKENS":
+            return None, usage, ERR_TRUNCATED
         return None, usage, ERR_PARSE_ERROR
 
 
@@ -792,7 +839,7 @@ async def _gemini_pair_menu(
         f"- Dessert : {menu.get('dessert') or '(aucun)'}\n\n"
         f"Vins disponibles (JSON) :\n{json.dumps(_cellar_ai_summary(wines), ensure_ascii=False)}"
     )
-    return await _gemini_json(hass, api_key, sys, user, temperature=0.3, max_tokens=1024)
+    return await _gemini_json(hass, api_key, sys, user, temperature=0.3, max_tokens=2048)
 
 
 async def _gemini_craving(
@@ -826,7 +873,7 @@ async def _gemini_craving(
         f"Couleur souhaitée : {color_lbl or 'indifférent'}\n\n"
         f"Vins disponibles (JSON) :\n{json.dumps(_cellar_ai_summary(wines), ensure_ascii=False)}"
     )
-    return await _gemini_json(hass, api_key, sys, user, temperature=0.3, max_tokens=512)
+    return await _gemini_json(hass, api_key, sys, user, temperature=0.3, max_tokens=1024)
 
 
 async def _gemini_audit_cellar(
@@ -851,7 +898,7 @@ async def _gemini_audit_cellar(
         f"Région prioritaire : {region or 'toutes régions'}\n\n"
         f"Cave actuelle (JSON) :\n{json.dumps(_cellar_ai_summary(wines), ensure_ascii=False)}"
     )
-    return await _gemini_json(hass, api_key, sys, user, temperature=0.4, max_tokens=1536)
+    return await _gemini_json(hass, api_key, sys, user, temperature=0.4, max_tokens=2560)
 
 
 async def _gemini_opportunity(
@@ -877,7 +924,7 @@ async def _gemini_opportunity(
         f'Vin repéré en magasin : "{wine_text}"\n\n'
         f"Cave actuelle (JSON) :\n{json.dumps(_cellar_ai_summary(wines), ensure_ascii=False)}"
     )
-    return await _gemini_json(hass, api_key, sys, user, temperature=0.3, max_tokens=768)
+    return await _gemini_json(hass, api_key, sys, user, temperature=0.3, max_tokens=1536)
 
 
 # ── Lecture d'étiquette par photo ─────────────────────────────────────────────
@@ -926,29 +973,19 @@ async def _gemini_analyze_photo(
         return [], last_code or ERR_UNAVAILABLE
     _bump_ai_usage(hass, data)
 
-    # Parsing de la réponse
-    candidate = data.get("candidates", [{}])[0]
-    finish = candidate.get("finishReason", "STOP")
+    # Parsing de la réponse (v7.1.6 : lecture de TOUTES les parties)
+    raw, finish = _gemini_text(data)
     if finish == "MAX_TOKENS":
-        _LOGGER.warning(
-            "Gemini photo: reponse tronquee (MAX_TOKENS). "
-            "Augmentez maxOutputTokens si le probleme persiste."
-        )
-    raw = (
-        candidate
-        .get("content", {})
-        .get("parts", [{}])[0]
-        .get("text", "")
-    )
-    # Tentative de réparation si JSON tronqué
+        _LOGGER.warning("Gemini photo : réponse tronquée (MAX_TOKENS)")
+    # Réparation d'un tableau JSON coupé net par la limite de tokens
     raw = raw.strip()
-    if raw and not raw.endswith("]"):
-        raw = raw.rstrip(",").rstrip() + "}]" if not raw.endswith("}") else raw + "]"
+    if raw.startswith("[") and not raw.endswith("]"):
+        raw = raw.rstrip(",").rstrip() + ("}]" if not raw.endswith("}") else "]")
     try:
         results, err = _parse_gemini_response(raw, "photo")
     except Exception as exc:
-        _LOGGER.warning("Gemini photo: erreur parsing reponse: %s", exc)
-        return [], ERR_PARSE_ERROR
+        _LOGGER.warning("Gemini photo : erreur de lecture (%s)", exc)
+        return [], ERR_TRUNCATED if finish == "MAX_TOKENS" else ERR_PARSE_ERROR
     _LOGGER.info("Gemini photo: %d vin(s) identifie(s)", len(results))
     return results, err
 
@@ -1001,13 +1038,7 @@ async def _gemini_pair_food(
         return [], code or ERR_UNAVAILABLE
     _bump_ai_usage(hass, data)
     try:
-        raw = (
-            data.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [{}])[0]
-            .get("text", "")
-        )
-        parsed = json.loads(raw)
+        parsed = _gemini_payload(data)              # v7.1.6 : lecture robuste
         results = parsed.get("results", []) if isinstance(parsed, dict) else []
         # garde uniquement les id réellement présents dans la cave
         valid_ids = {w.get("id") for w in wines}
@@ -1684,8 +1715,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
         _bump_ai_usage(hass, data_r)
         try:
-            raw = (data_r.get("candidates", [{}])[0]
-                   .get("content", {}).get("parts", [{}])[0].get("text", "0"))
+            raw, _f = _gemini_text(data_r)          # v7.1.6 : toutes les parties
             raw = re.sub(r"[^0-9.,]", "", raw.strip()).replace(",", ".")
             price = round(float(raw), 2) if raw else 0
             connection.send_result(msg["id"], {"price": price, "error": None})
