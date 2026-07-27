@@ -128,6 +128,14 @@ L'intégralité de Millésime a été conçue et développée en collaboration a
 
 *Les 30 derniers jours — l'historique complet est disponible dans les [releases GitHub](https://github.com/Redsklns/ha-millesime/releases).*
 
+### [7.1.6] — 2026-07
+Suite du correctif IA : lecture des réponses Gemini rendue robuste.
+
+- 🐛 **`parse_error` sur les accords et le sommelier** : le code lisait uniquement la **première partie** de la réponse Gemini. Or, quand le modèle raisonne, cette première partie peut être une partie de réflexion ou une partie au texte vide (porteuse de la signature de raisonnement) — on récupérait alors une chaîne vide, illisible
+- ✅ **Lecture de toutes les parties** de la réponse, en écartant celles de réflexion, avec tolérance aux blocs ```json, aux préfixes « THOUGHT: » et au texte parasite autour du JSON
+- ✅ **Budgets de sortie relevés** (menu 1024 → 2048, envie 512 → 1024, opportunité 768 → 1536, audit 1536 → 2560) : la génération 3 ne permettant pas de couper totalement le raisonnement, une marge évite les réponses coupées
+- ✅ **Nouveau code `truncated`** : une réponse coupée par la limite de tokens n'est plus confondue avec une réponse illisible, et le message invite à simplifier la demande
+
 ### [7.1.5] — 2026-07
 Correctif majeur des fonctions IA (« IA indisponible » sur les accords, le sommelier et l'estimation de prix).
 
