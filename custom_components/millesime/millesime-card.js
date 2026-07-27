@@ -1,5 +1,5 @@
 /**
- * Millésime Card v7.1.5
+ * Millésime Card v7.1.6
  * Cave à vin pour Home Assistant
  * - Recherche texte avec suggestions temps réel
  * - Lecture d'étiquette par photo (Gemini Vision)
@@ -7,7 +7,7 @@
  * - Journal de dégustation, recherche dans la cave, déplacement de casier
  */
 
-const MILLESIME_CARD_VERSION = "7.1.5";
+const MILLESIME_CARD_VERSION = "7.1.6";
 
 // ── Budget quotidien Gemini (free tier) ─────────────────────────────────────
 // Estimation codée en dur : ~250 requêtes/jour (Gemini 2.5 Flash, quotas
@@ -747,6 +747,7 @@ const ERROR_MESSAGES = {
   // v7.1.5 : deux causes qui se cachaient derrière « service indisponible »
   no_model:            "🚫 Votre clé Gemini n'a accès à aucun modèle compatible. Vérifiez votre projet sur aistudio.google.com (l'API Generative Language doit être activée).",
   timeout:             "⏱️ Gemini a mis trop de temps à répondre. Réessayez — si cela persiste, réduisez la taille de la demande.",
+  truncated:           "✂️ Réponse Gemini incomplète (trop longue). Réessayez, ou simplifiez la demande (moins de plats, description plus courte).",
   no_key:              "ℹ️ Résultats Open Food Facts. Configurez une clé Gemini pour obtenir notes de dégustation et accords mets-vins.",
   no_wine_found:       "📷 Aucune étiquette de vin reconnue. Assurez-vous que l'étiquette est nette et bien éclairée.",
 };
@@ -1642,7 +1643,7 @@ class MillesimeCard extends HTMLElement {
     // Quota dépassé = warning visible (mais résultats OFF disponibles)
     // v7.1.5 : timeout = panne passagère (repli OFF possible) → avertissement ;
     // no_model = vraie erreur de configuration de la clé → erreur
-    const level = ["quota_exceeded", "service_unavailable", "timeout"].includes(error)
+    const level = ["quota_exceeded", "service_unavailable", "timeout", "truncated"].includes(error)
       ? "warning" : "error";
 
     // Afficher sous la barre de recherche si des résultats OFF existent
@@ -2215,7 +2216,7 @@ class MillesimeCard extends HTMLElement {
       // Afficher le banner d'erreur si besoin
       if (error) {
         const msg = ERROR_MESSAGES[error] || error;
-        const level = ["quota_exceeded", "service_unavailable", "timeout"].includes(error) ? "warning" : "error";
+        const level = ["quota_exceeded", "service_unavailable", "timeout", "truncated"].includes(error) ? "warning" : "error";
         banner.innerHTML = `<div class="mm-search-banner mm-search-banner--${level}">${msg}</div>`;
       } else if (source === "off" && box.querySelector("#viv-query").value.trim().length >= 3) {
         // Info discrète : résultats OFF sans erreur (pas de clé Gemini)
