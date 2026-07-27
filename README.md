@@ -128,6 +128,17 @@ L'intégralité de Millésime a été conçue et développée en collaboration a
 
 *Les 30 derniers jours — l'historique complet est disponible dans les [releases GitHub](https://github.com/Redsklns/ha-millesime/releases).*
 
+### [7.1.5] — 2026-07
+Correctif majeur des fonctions IA (« IA indisponible » sur les accords, le sommelier et l'estimation de prix).
+
+- 🐛 **Cause identifiée** : depuis la 7.1.3, le modèle par défaut est `gemini-2.5-flash`, dont le mode « raisonnement » (*thinking*) est actif par défaut. Les tokens de réflexion sont décomptés du budget de sortie **et** allongent fortement la réponse — d'où des réponses tronquées et des délais dépassés signalés comme « service indisponible »
+- ✅ **Thinking désactivé** sur tous les appels (extractions structurées courtes : aucun raisonnement long nécessaire), avec le réglage adapté à chaque famille de modèle
+- ✅ **Délais augmentés** (accords 20 → 45 s, photo 30 → 45 s, recherche 15 → 30 s, sommelier 25 → 40 s)
+- ✅ **Estimation de prix réparée** : la sortie était plafonnée à 32 tokens, entièrement consommés par la réflexion avant d'écrire le prix (256 tokens désormais)
+- ✅ **Appels IA unifiés** : une seule fonction centrale gère le repli de modèle, les réessais et les erreurs — fini les cinq boucles divergentes
+- ✅ **Messages d'erreur précis** : « service indisponible » masquait trois pannes différentes, désormais distinguées — `no_model` (la clé n'a accès à aucun modèle), `timeout` (délai dépassé) et panne serveur
+- ✅ **Auto-récupération** : si la découverte des modèles a échoué au démarrage, elle est relancée automatiquement au premier échec au lieu de rester bloquée jusqu'au redémarrage
+
 ### [7.1.4] — 2026-07
 Silhouette bordelaise affinée.
 
