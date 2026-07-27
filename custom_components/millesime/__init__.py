@@ -1,4 +1,4 @@
-"""Millésime v7.1.4 — Cave à Vin pour Home Assistant.
+"""Millésime v7.1.5 — Cave à Vin pour Home Assistant.
 
 Modèles Gemini  : découverts dynamiquement au démarrage (GET /models sur la clé
                   de l'utilisateur), avec repli sur les modèles stables 2.5 flash.
@@ -36,7 +36,7 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN    = "millesime"
 PLATFORMS = ["sensor"]
 DATA_FILE = "millesime_data.json"
-VERSION   = "7.1.4"
+VERSION   = "7.1.5"
 
 OFF_UA       = f"Millesime-HA/{VERSION} (github.com/Redsklns/ha-millesime)"
 # Deux modèles séparés = deux pools de quota indépendants (free tier)
@@ -126,6 +126,35 @@ async def _discover_gemini_models(hass: HomeAssistant, api_key: str) -> None:
     )
 
 
+def _thinking_cfg(model: str) -> dict:
+    """Réglage du « raisonnement » (thinking) selon la famille de modèle (v7.1.5).
+
+    POURQUOI C'EST CRITIQUE : depuis la v7.1.3, le modèle par défaut est
+    gemini-2.5-flash, dont le thinking DYNAMIQUE est actif par défaut. Or les
+    tokens de réflexion sont décomptés de maxOutputTokens ET rallongent
+    fortement la réponse : nos appels (estimation de prix à 32 tokens, sommelier
+    à 512-1536) se retrouvaient tronqués ou en timeout → « IA indisponible ».
+    Millésime n'a besoin d'aucun raisonnement long : ce sont des extractions
+    structurées courtes. On désactive donc le thinking partout où c'est permis.
+
+    - gemini-2.5-*  : thinkingBudget = 0 → thinking désactivé (documenté)
+    - gemini-3*     : thinkingLevel = "low" (la famille 3 ne permet pas l'arrêt
+                      complet, on demande le niveau minimal)
+    - autre/inconnu : rien (on n'envoie jamais un champ non supporté)
+    """
+    m = (model or "").lower()
+    if "2.5" in m:
+        return {"thinkingConfig": {"thinkingBudget": 0}}
+    if m.startswith("gemini-3"):
+        return {"thinkingConfig": {"thinkingLevel": "low"}}
+    return {}
+
+
+def _gen_cfg(model: str, base: dict) -> dict:
+    """generationConfig complet pour un modèle donné (base + réglage thinking)."""
+    return {**base, **_thinking_cfg(model)}
+
+
 def _text_models() -> list[str]:
     """Chaîne de modèles texte à essayer (découverte si dispo, sinon repli stable)."""
     return _GEMINI_MODELS["text"] or [GEMINI_TEXT_MODEL, GEMINI_TEXT_FALLBACK]
@@ -145,8 +174,13 @@ _CACHE_TTL = 300  # 5 minutes
 # Le frontend affiche un message adapté à chaque code.
 ERR_QUOTA_EXCEEDED = "quota_exceeded"   # HTTP 429
 ERR_INVALID_KEY    = "invalid_key"      # HTTP 400/401/403
-ERR_UNAVAILABLE    = "service_unavailable"  # HTTP 5xx / timeout
+ERR_UNAVAILABLE    = "service_unavailable"  # HTTP 5xx
 ERR_PARSE_ERROR    = "parse_error"      # JSON invalide dans la réponse
+# v7.1.5 : « service_unavailable » masquait trois pannes très différentes
+# (aucun modèle utilisable, délai dépassé, panne serveur) — impossible à
+# diagnostiquer pour l'utilisateur comme pour le support. On les sépare.
+ERR_NO_MODEL       = "no_model"         # tous les modèles ont répondu 404
+ERR_TIMEOUT        = "timeout"          # délai dépassé sur tous les modèles
 
 DEFAULT_DATA: dict = {
     "cellars": [{"id": "main", "name": "Millésime", "racks": []}],
@@ -545,6 +579,89 @@ def _gemini_error_code(status: int) -> str:
     return ERR_UNAVAILABLE
 
 
+async def _gemini_call(
+    hass: HomeAssistant, api_key: str, models: list[str], body_base: dict,
+    gen_cfg: dict, timeout: int, label: str, session=None,
+) -> tuple[dict | None, str | None]:
+    """Appel Gemini UNIFIÉ pour toutes les fonctions IA (v7.1.5).
+
+    Auparavant, chaque fonction dupliquait sa propre boucle de repli, avec des
+    comportements divergents et un « service_unavailable » fourre-tout. Cette
+    fonction centralise :
+      • le réglage du thinking adapté au modèle (voir _thinking_cfg) ;
+      • le repli de modèle en modèle sur 404 (modèle absent) et sur 5xx ;
+      • le réessai SANS thinking si un modèle refuse ce réglage (HTTP 400) —
+        sans quoi l'utilisateur verrait à tort « clé invalide » ;
+      • l'arrêt immédiat sur 429 / clé invalide (insister est inutile) ;
+      • un code d'erreur PRÉCIS : no_model, timeout, quota, clé, ou 5xx.
+
+    Ne comptabilise PAS les tokens : chaque appelant garde son _bump_ai_usage
+    (certains ont besoin de la valeur retournée).
+    Retourne (data_json | None, code_erreur | None).
+    """
+    session = session or async_get_clientsession(hass)
+    saw_404 = saw_timeout = saw_other = False
+
+    for model in models:
+        # tentative 0 = avec le réglage thinking ; tentative 1 = sans (si 400)
+        for attempt in (0, 1):
+            cfg = _gen_cfg(model, gen_cfg) if attempt == 0 else dict(gen_cfg)
+            body = {**body_base, "generationConfig": cfg}
+            try:
+                async with session.post(
+                    f"{GEMINI_BASE_URL}{model}:generateContent",
+                    params={"key": api_key},
+                    json=body,
+                    headers={"Content-Type": "application/json"},
+                    timeout=timeout,
+                ) as resp:
+                    status = resp.status
+                    if status == 200:
+                        data = await resp.json(content_type=None)
+                        _LOGGER.debug("%s : réponse de %s", label, model)
+                        return data, None
+                    if status == 400 and attempt == 0 and _thinking_cfg(model):
+                        # Ce modèle n'accepte peut-être pas le réglage thinking :
+                        # on retente une fois sans, avant de conclure à une erreur.
+                        _LOGGER.debug("%s : 400 avec thinkingConfig (%s), réessai sans", label, model)
+                        continue
+                    if status == 404:
+                        saw_404 = True
+                        _LOGGER.warning("%s : modèle %s indisponible (404), repli", label, model)
+                        break                      # → modèle suivant
+                    if status in (429, 400, 401, 403):
+                        saw_other = True
+                        _LOGGER.warning("%s : HTTP %s sur %s", label, status, model)
+                        return None, _gemini_error_code(status)
+                    saw_other = True               # 5xx : panne passagère
+                    _LOGGER.warning("%s : HTTP %s sur %s, repli", label, status, model)
+                    break                          # → modèle suivant
+            except asyncio.TimeoutError:
+                saw_timeout = True
+                _LOGGER.warning("%s : délai dépassé (%s, %ss)", label, model, timeout)
+                break
+            except Exception as exc:
+                saw_other = True
+                _LOGGER.warning("%s : erreur (%s) %s", label, model, exc)
+                break
+
+    if saw_404 and not saw_other and not saw_timeout:
+        _LOGGER.error(
+            "%s : AUCUN modèle utilisable (%s). Vérifiez l'accès de votre clé "
+            "Gemini aux modèles sur aistudio.google.com.", label, ", ".join(models))
+        # Auto-récupération : si la découverte n'a jamais abouti (coupure réseau
+        # au démarrage, clé ajoutée depuis…), on la relance en tâche de fond.
+        # Le prochain essai de l'utilisateur utilisera alors les VRAIS modèles
+        # de sa clé au lieu du repli codé en dur.
+        if not _GEMINI_MODELS["discovered"] and api_key:
+            _LOGGER.info("%s : redécouverte des modèles Gemini programmée", label)
+            hass.async_create_task(_discover_gemini_models(hass, api_key))
+        return None, ERR_NO_MODEL
+    if saw_timeout and not saw_other:
+        return None, ERR_TIMEOUT
+    return None, ERR_UNAVAILABLE
+
+
 # ── Recherche Gemini par texte ────────────────────────────────────────────────
 
 async def _gemini_search_text(
@@ -554,46 +671,24 @@ async def _gemini_search_text(
 
     Retourne (résultats, code_erreur_ou_None).
     """
-    session = async_get_clientsession(hass)
-    body = {
+    body_base = {
         "system_instruction": {"parts": [{"text": _GEMINI_SYSTEM}]},
         "contents": [{"parts": [{"text": (
             f'Recherche de vin : "{query}"\n'
             f"Retourne jusqu'à 6 vins correspondants."
         )}]}],
-        "generationConfig": {
-            "temperature":      0.2,
-            "maxOutputTokens":  2048,
-            "responseMimeType": "application/json",
-        },
     }
-    data = None
-    last_code = ERR_UNAVAILABLE
-    for _model in _text_models():
-        try:
-            async with session.post(
-                f"{GEMINI_BASE_URL}{_model}:generateContent",
-                params={"key": api_key},
-                json=body,
-                headers={"Content-Type": "application/json"},
-                timeout=15,
-            ) as resp:
-                if resp.status == 404:
-                    _LOGGER.warning("Gemini texte: modele %s indisponible (404), repli", _model)
-                    continue
-                if resp.status != 200:
-                    code = _gemini_error_code(resp.status)
-                    _LOGGER.warning("Gemini texte HTTP %s ('%s') → %s", resp.status, query, code)
-                    return [], code
-                data = await resp.json(content_type=None)
-                _bump_ai_usage(hass, data)
-                break
-        except asyncio.TimeoutError:
-            _LOGGER.warning("Gemini texte timeout (%s) pour '%s'", _model, query)
-        except Exception as exc:
-            _LOGGER.warning("Gemini texte erreur (%s): %s", _model, exc)
+    # v7.1.5 : appel unifié (thinking désactivé, repli de modèle, erreurs précises).
+    # Délai porté à 30 s : la marge de 15 s était trop juste dès que le modèle
+    # prenait le temps de répondre, d'où de faux « service indisponible ».
+    data, code = await _gemini_call(
+        hass, api_key, _text_models(), body_base,
+        {"temperature": 0.2, "maxOutputTokens": 2048, "responseMimeType": "application/json"},
+        30, f"Gemini texte '{query}'",
+    )
     if data is None:
-        return [], last_code
+        return [], code or ERR_UNAVAILABLE
+    _bump_ai_usage(hass, data)
     try:
         raw = (
             data.get("candidates", [{}])[0]
@@ -621,51 +716,34 @@ async def _gemini_search_text(
 
 async def _gemini_json(
     hass: HomeAssistant, api_key: str, system: str, user_text: str,
-    *, temperature: float = 0.3, max_tokens: int = 2048, timeout: int = 25,
+    *, temperature: float = 0.3, max_tokens: int = 2048, timeout: int = 40,
 ) -> tuple[dict | None, dict, str | None]:
     """Appel Gemini générique en JSON strict, avec repli de modèle 3 → 2.5 et
     comptage de tokens. Retourne (objet_json | None, usage, code_erreur | None)."""
-    session = async_get_clientsession(hass)
-    body = {
+    body_base = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": [{"parts": [{"text": user_text}]}],
-        "generationConfig": {
-            "temperature":      temperature,
-            "maxOutputTokens":  max_tokens,
-            "responseMimeType": "application/json",
-        },
     }
-    data = None
-    for _model in _text_models():
-        try:
-            async with session.post(
-                f"{GEMINI_BASE_URL}{_model}:generateContent",
-                params={"key": api_key},
-                json=body,
-                headers={"Content-Type": "application/json"},
-                timeout=timeout,
-            ) as resp:
-                if resp.status == 404:
-                    _LOGGER.warning("Gemini sommelier: modèle %s indisponible (404), repli", _model)
-                    continue
-                if resp.status != 200:
-                    return None, {}, _gemini_error_code(resp.status)
-                data = await resp.json(content_type=None)
-                break
-        except asyncio.TimeoutError:
-            _LOGGER.warning("Gemini sommelier timeout (%s)", _model)
-        except Exception as exc:
-            _LOGGER.warning("Gemini sommelier erreur (%s): %s", _model, exc)
+    # v7.1.5 : appel unifié. Le thinking est désactivé — il était décompté de
+    # maxOutputTokens (512 à 1536 ici), ce qui tronquait les réponses sommelier.
+    data, code = await _gemini_call(
+        hass, api_key, _text_models(), body_base,
+        {"temperature": temperature, "maxOutputTokens": max_tokens,
+         "responseMimeType": "application/json"},
+        timeout, "Gemini sommelier",
+    )
     if data is None:
-        return None, {}, ERR_UNAVAILABLE
+        return None, {}, code or ERR_UNAVAILABLE
     usage = _bump_ai_usage(hass, data)
     try:
         raw = (data.get("candidates", [{}])[0].get("content", {})
                    .get("parts", [{}])[0].get("text", ""))
         return json.loads(raw), usage, None
     except Exception as exc:
-        _LOGGER.warning("Gemini sommelier: JSON invalide (%s)", exc)
-        return None, usage, ERR_UNAVAILABLE
+        # Réponse vide/tronquée : on le dit clairement plutôt que « indisponible »
+        finish = (data.get("candidates", [{}])[0] or {}).get("finishReason", "")
+        _LOGGER.warning("Gemini sommelier: JSON invalide (%s, finishReason=%s)", exc, finish)
+        return None, usage, ERR_PARSE_ERROR
 
 
 def _cellar_ai_summary(wines: list[dict]) -> list[dict]:
@@ -813,8 +891,6 @@ async def _gemini_analyze_photo(
     mime_type : "image/jpeg" | "image/png" | "image/webp"
     Retourne (résultats, code_erreur_ou_None).
     """
-    session = async_get_clientsession(hass)
-
     photo_prompt = (
         "Analyse cette étiquette de bouteille de vin. "
         "Identifie le vin et retourne UN objet JSON avec les informations du vin. "
@@ -829,56 +905,26 @@ async def _gemini_analyze_photo(
                 {"inline_data": {"mime_type": mime_type, "data": image_b64}},
             ]
         }],
-        "generationConfig": {
-            "temperature":      0.1,
-            "maxOutputTokens":  2048,
-            "responseMimeType": "application/json",
-        },
     }
-    # Modèles à essayer en cascade : vision d'abord, lite en fallback
-    _PHOTO_MODELS = _vision_models()
-    data = None
-    last_code = ERR_UNAVAILABLE
-
-    for model in _PHOTO_MODELS:
-        for attempt in range(2):
-            try:
-                async with session.post(
-                    f"{GEMINI_BASE_URL}{model}:generateContent",
-                    params={"key": api_key},
-                    json=body,
-                    headers={"Content-Type": "application/json"},
-                    timeout=30,
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json(content_type=None)
-                        _bump_ai_usage(hass, data)
-                        _LOGGER.info("Gemini photo: modele %s OK", model)
-                        break
-                    last_code = _gemini_error_code(resp.status)
-                    _LOGGER.warning(
-                        "Gemini photo %s HTTP %s -> %s (tentative %d/2)",
-                        model, resp.status, last_code, attempt + 1
-                    )
-                    if resp.status in (503, 429) and attempt == 0:
-                        await asyncio.sleep(3.0)
-                        continue
-                    # Erreur non-retryable ou 2e tentative → passer au modèle suivant
-                    break
-            except asyncio.TimeoutError:
-                _LOGGER.warning("Gemini photo timeout %s (tentative %d/2)", model, attempt + 1)
-                if attempt == 0:
-                    await asyncio.sleep(2.0)
-            except Exception as exc:
-                _LOGGER.warning("Gemini photo erreur %s: %s", model, exc)
-                break
-        if data is not None:
+    # v7.1.5 : appel unifié sur les modèles VISION (thinking désactivé : il
+    # consommait le budget de sortie et allongeait la lecture d'étiquette).
+    # Le réessai temporisé sur panne passagère est conservé, mais on ne réessaie
+    # QUE ce qui a une chance d'aboutir (5xx / délai), pas un quota ni un 404.
+    gen = {"temperature": 0.1, "maxOutputTokens": 2048, "responseMimeType": "application/json"}
+    data, last_code = None, ERR_UNAVAILABLE
+    for attempt in range(2):
+        data, last_code = await _gemini_call(
+            hass, api_key, _vision_models(), body, gen, 45, "Gemini photo",
+        )
+        if data is not None or last_code not in (ERR_UNAVAILABLE, ERR_TIMEOUT):
             break
+        if attempt == 0:
+            await asyncio.sleep(3.0)
 
-    # Tous les modèles ont échoué
     if data is None:
-        _LOGGER.warning("Gemini photo: tous les modeles ont echoue (%s)", last_code)
-        return [], last_code
+        _LOGGER.warning("Gemini photo : échec sur tous les modèles (%s)", last_code)
+        return [], last_code or ERR_UNAVAILABLE
+    _bump_ai_usage(hass, data)
 
     # Parsing de la réponse
     candidate = data.get("candidates", [{}])[0]
@@ -914,7 +960,6 @@ async def _gemini_pair_food(
 ) -> tuple[list[dict], str | None]:
     """Demande à Gemini de choisir, PARMI les vins fournis, les meilleurs accords
     pour un plat donné. Retourne ([{id, reason, rank}], code_erreur_ou_None)."""
-    session = async_get_clientsession(hass)
     # On envoie une liste compacte des vins de la cave (id + infos utiles)
     catalogue = []
     for w in wines:
@@ -942,35 +987,19 @@ async def _gemini_pair_food(
             f'Plat : "{dish}"\n\n'
             f"Vins disponibles (JSON) :\n{json.dumps(catalogue, ensure_ascii=False)}"
         )}]}],
-        "generationConfig": {
-            "temperature":      0.3,
-            "maxOutputTokens":  2048,
-            "responseMimeType": "application/json",
-        },
     }
-    data = None
-    for _model in _text_models():
-        try:
-            async with session.post(
-                f"{GEMINI_BASE_URL}{_model}:generateContent",
-                params={"key": api_key},
-                json=body,
-                headers={"Content-Type": "application/json"},
-                timeout=20,
-            ) as resp:
-                if resp.status == 404:
-                    continue
-                if resp.status != 200:
-                    return [], _gemini_error_code(resp.status)
-                data = await resp.json(content_type=None)
-                _bump_ai_usage(hass, data)
-                break
-        except asyncio.TimeoutError:
-            _LOGGER.warning("Gemini accords timeout (%s) pour '%s'", _model, dish)
-        except Exception as exc:
-            _LOGGER.warning("Gemini accords erreur (%s): %s", _model, exc)
+    # v7.1.5 : appel unifié. C'est LA fonction qui échouait en « service
+    # indisponible » : le thinking de gemini-2.5-flash allongeait la réponse
+    # au-delà des 20 s de délai. Thinking désactivé + délai porté à 45 s
+    # (l'accord sur un menu complet envoie tout le catalogue de la cave).
+    data, code = await _gemini_call(
+        hass, api_key, _text_models(), body,
+        {"temperature": 0.3, "maxOutputTokens": 2048, "responseMimeType": "application/json"},
+        45, f"Gemini accords '{dish}'",
+    )
     if data is None:
-        return [], ERR_UNAVAILABLE
+        return [], code or ERR_UNAVAILABLE
+    _bump_ai_usage(hass, data)
     try:
         raw = (
             data.get("candidates", [{}])[0]
@@ -1641,39 +1670,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             f"Quel est le prix moyen constate en euros pour ce vin : {msg['query']} ? "
             "Reponds UNIQUEMENT avec un nombre decimal (ex: 18.5). Rien d'autre."
         )
-        session = async_get_clientsession(hass)
-        body = {
-            "contents": [{"parts": [{"text": price_prompt}]}],
-            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 32},
-        }
-        # v7.1.3 : mêmes modèles découverts que le reste, avec repli 404 → modèle suivant
-        last_err = ERR_UNAVAILABLE
-        for _model in _text_models():
-            try:
-                async with session.post(
-                    f"{GEMINI_BASE_URL}{_model}:generateContent",
-                    params={"key": gkey},
-                    json=body,
-                    headers={"Content-Type": "application/json"},
-                    timeout=15,
-                ) as resp:
-                    if resp.status == 404:
-                        last_err = ERR_UNAVAILABLE
-                        continue                       # modèle absent → suivant
-                    if resp.status != 200:
-                        connection.send_result(msg["id"], {"price": 0, "error": _gemini_error_code(resp.status)})
-                        return
-                    data_r = await resp.json(content_type=None)
-                    raw = (data_r.get("candidates", [{}])[0]
-                           .get("content", {}).get("parts", [{}])[0].get("text", "0"))
-                    raw = re.sub(r"[^0-9.,]", "", raw.strip()).replace(",", ".")
-                    price = round(float(raw), 2) if raw else 0
-                    connection.send_result(msg["id"], {"price": price, "error": None})
-                    return
-            except Exception as exc:
-                _LOGGER.warning("estimate_price erreur (%s): %s", _model, exc)
-                last_err = ERR_UNAVAILABLE
-        connection.send_result(msg["id"], {"price": 0, "error": last_err})
+        body = {"contents": [{"parts": [{"text": price_prompt}]}]}
+        # v7.1.5 : appel unifié. CAS LE PLUS CRITIQUE : la sortie était limitée à
+        # 32 tokens — avec le thinking actif (défaut de gemini-2.5-flash), la
+        # réflexion consommait ce budget avant même d'écrire le prix, et la
+        # réponse revenait vide. Thinking désactivé + marge portée à 256 tokens.
+        data_r, code = await _gemini_call(
+            hass, gkey, _text_models(), body,
+            {"temperature": 0.1, "maxOutputTokens": 256}, 30, "estimate_price",
+        )
+        if data_r is None:
+            connection.send_result(msg["id"], {"price": 0, "error": code or ERR_UNAVAILABLE})
+            return
+        _bump_ai_usage(hass, data_r)
+        try:
+            raw = (data_r.get("candidates", [{}])[0]
+                   .get("content", {}).get("parts", [{}])[0].get("text", "0"))
+            raw = re.sub(r"[^0-9.,]", "", raw.strip()).replace(",", ".")
+            price = round(float(raw), 2) if raw else 0
+            connection.send_result(msg["id"], {"price": price, "error": None})
+        except Exception as exc:
+            _LOGGER.warning("estimate_price : réponse illisible (%s)", exc)
+            connection.send_result(msg["id"], {"price": 0, "error": ERR_PARSE_ERROR})
 
     websocket_api.async_register_command(hass, ws_estimate_price)
 
