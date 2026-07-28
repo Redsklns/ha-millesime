@@ -1,7 +1,7 @@
 # 🍷 Millésime — Cave à vin pour Home Assistant
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=flat-square)](https://github.com/hacs/integration)
-[![version](assets/version.svg)](https://github.com/Redsklns/ha-millesime/releases)
+[![version](https://img.shields.io/github/v/release/Redsklns/ha-millesime?style=flat-square&color=7B1D2E&label=version&sort=semver)](https://github.com/Redsklns/ha-millesime/releases)
 [![Offrir un verre de vin](https://img.shields.io/badge/🍷_Offrir_un_verre_de_vin-PayPal-7B1D2E.svg?style=flat-square)](https://paypal.me/Redsklns)
 
 **Millésime** transforme Home Assistant en gestionnaire de cave à vin complet : visualisez vos bouteilles dans une scène **3D réaliste**, scannez les étiquettes par **photo**, suivez la valeur de votre collection et tenez un **journal de dégustation**.
@@ -127,6 +127,14 @@ L'intégralité de Millésime a été conçue et développée en collaboration a
 ## 📝 Changelog
 
 *Les 30 derniers jours — l'historique complet est disponible dans les [releases GitHub](https://github.com/Redsklns/ha-millesime/releases).*
+
+### [7.1.7] — 2026-07
+Retrait d'une bouteille à l'unité.
+
+- 🐛 **Impossible de retirer une seule bouteille sans la marquer « bue »** : dans Millésime, un vin est une fiche unique accompagnée de N emplacements (= N bouteilles physiques), et le bouton « Retirer » supprimait toujours la fiche entière, donc tous les exemplaires
+- ✅ **Choix au retrait** : sur un vin possédant plusieurs bouteilles, « Retirer » propose désormais la liste des emplacements — on retire celui que l'on veut, les autres restent en cave — ou la suppression complète du vin. Un vin à une seule bouteille conserve la suppression directe
+- ✅ **Retrait depuis un emplacement** : la fenêtre d'édition d'une bouteille (via son badge d'emplacement) reçoit un bouton « Retirer » ciblant précisément cette bouteille
+- ℹ️ Ce retrait n'ajoute rien au journal de dégustation : pour conserver la trace d'une bouteille bue, utilisez toujours « Bue »
 
 ### [7.1.6] — 2026-07
 Suite du correctif IA : lecture des réponses Gemini rendue robuste.
