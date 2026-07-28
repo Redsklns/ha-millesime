@@ -1,5 +1,5 @@
 /**
- * Millésime Card v7.1.6
+ * Millésime Card v7.1.7
  * Cave à vin pour Home Assistant
  * - Recherche texte avec suggestions temps réel
  * - Lecture d'étiquette par photo (Gemini Vision)
@@ -7,7 +7,7 @@
  * - Journal de dégustation, recherche dans la cave, déplacement de casier
  */
 
-const MILLESIME_CARD_VERSION = "7.1.6";
+const MILLESIME_CARD_VERSION = "7.1.7";
 
 // ── Budget quotidien Gemini (free tier) ─────────────────────────────────────
 // Estimation codée en dur : ~250 requêtes/jour (Gemini 2.5 Flash, quotas
@@ -1699,6 +1699,7 @@ class MillesimeCard extends HTMLElement {
     if (type === "history")   box.innerHTML = this._historyHTML();
     if (type === "drink")     box.innerHTML = this._drinkFormHTML(opts.wine);
     if (type === "slotedit")  box.innerHTML = this._slotEditHTML(opts.wine, opts.slotIdx);
+    if (type === "removepick") box.innerHTML = this._removePickHTML(opts.wine);
     if (type === "journal")   box.innerHTML = this._journalHTML();
     if (type === "search")    box.innerHTML = this._searchModalHTML();
     if (type === "bottlelist") box.innerHTML = this._bottleListHTML();
@@ -1725,6 +1726,7 @@ class MillesimeCard extends HTMLElement {
     if (type === "detail")    this._bindGloss(box);   // glossaires ℹ️ arômes/structure (v7.1.0)
     if (type === "duplicate") this._bindAddSlotForm(box, opts.wine);
     if (type === "slotedit")  this._bindSlotEdit(box, opts.wine, opts.slotIdx);
+    if (type === "removepick") this._bindRemovePick(box, opts.wine);
     if (type === "history") {
       this._bindHistory(box);
     }
@@ -2878,6 +2880,61 @@ class MillesimeCard extends HTMLElement {
 
   // ── Édition d'une bouteille (format / commentaire propres à l'emplacement) ──
 
+  // ── Retrait ciblé (v7.1.7) ────────────────────────────────────────────────
+  // Un vin = une fiche + N emplacements (= N bouteilles physiques). Cet écran
+  // permet enfin de n'en retirer QU'UNE, sans la marquer comme bue.
+  _removePickHTML(wine) {
+    const slots = wine.slots || [];
+    return `
+      <div class="mm-header">
+        <span class="mm-title">🗑️ Retirer une bouteille</span>
+        <button class="mm-close" data-close>✕</button>
+      </div>
+      <div class="mm-body">
+        <div class="mm-notes mm-tasting" style="margin-bottom:14px">
+          <strong>${esc(wine.name)}${wine.vintage ? " " + esc(wine.vintage) : ""}</strong><br>
+          ${slots.length} bouteilles en cave. Choisissez celle à retirer — les autres restent en place.
+          <br><small>Pour la garder au journal de dégustation, utilisez plutôt « Bue » sur la fiche.</small>
+        </div>
+        <div class="rp-list">
+          ${slots.map((s, i) => `
+            <button class="rp-item" data-idx="${i}">
+              <span class="rp-loc">${esc(this._slotLabel(s))}</span>
+              ${s.size || s.comment ? `<span class="rp-meta">${esc([s.size, s.comment].filter(Boolean).join(" · "))}</span>` : ""}
+              <span class="rp-act">Retirer</span>
+            </button>`).join("")}
+        </div>
+      </div>
+      <div class="mm-footer">
+        <button class="mm-btn mm-btn-ghost" data-close>Annuler</button>
+        <button class="mm-btn mm-btn-danger" id="rp-all">🗑️ Retirer tout le vin (${slots.length})</button>
+      </div>`;
+  }
+
+  _bindRemovePick(box, wine) {
+    box.querySelectorAll(".rp-item").forEach((el) =>
+      el.addEventListener("click", async () => {
+        const idx = parseInt(el.dataset.idx) || 0;
+        const s = wine.slots?.[idx] || {};
+        if (await this._confirm(
+          `Retirer la bouteille en ${this._slotLabel(s)} ?\n\n` +
+          `Les ${(wine.slots?.length || 1) - 1} autre(s) exemplaire(s) restent en cave.`
+        )) {
+          this._closeModal();
+          await this._callService("remove_slot", { wine_id: wine.id, slot_idx: idx });
+        }
+      })
+    );
+    box.querySelector("#rp-all")?.addEventListener("click", async () => {
+      const n = wine.slots?.length || 0;
+      if (await this._confirm(`Retirer "${wine.name}" et ses ${n} bouteilles de la cave ?`)) {
+        this._selected = null;
+        this._closeModal();
+        await this._callService("remove_wine", { wine_id: wine.id });
+      }
+    });
+  }
+
   _slotEditHTML(wine, slotIdx) {
     const s = wine.slots?.[slotIdx] || {};
     const racks = this._data?.cellar?.racks || [];
@@ -2914,6 +2971,7 @@ class MillesimeCard extends HTMLElement {
         </div>
       </div>
       <div class="mm-footer">
+        <button class="mm-btn mm-btn-danger" id="se-remove" title="Retirer uniquement cette bouteille de la cave">🗑️ Retirer</button>
         <button class="mm-btn mm-btn-ghost" data-close>Annuler</button>
         <button class="mm-btn mm-btn-primary" id="se-submit">Enregistrer</button>
       </div>`;
@@ -2921,6 +2979,19 @@ class MillesimeCard extends HTMLElement {
 
   _bindSlotEdit(box, wine, slotIdx) {
     const cur = wine.slots?.[slotIdx] || {};
+    // v7.1.7 : retrait UNITAIRE — retire ce seul emplacement sans passer par
+    // « bue » (donc sans entrée au journal de dégustation). Le backend supprime
+    // le vin automatiquement si c'était sa dernière bouteille.
+    box.querySelector("#se-remove")?.addEventListener("click", async () => {
+      const n = wine.slots?.length || 1;
+      const msg = n > 1
+        ? `Retirer cette bouteille de "${wine.name}" ?\n\nLes ${n - 1} autre(s) exemplaire(s) restent dans la cave.`
+        : `Retirer "${wine.name}" de la cave ?\n\nC'est sa dernière bouteille.`;
+      if (await this._confirm(msg)) {
+        this._closeModal();
+        await this._callService("remove_slot", { wine_id: wine.id, slot_idx: slotIdx });
+      }
+    });
     // Picker mono-sélection : le slot actuel de CETTE bouteille est exclu des
     // occupés (donc déplaçable sur lui-même = aucun déplacement) ; les slots des
     // autres bouteilles restent « pris » et non cliquables.
@@ -4343,13 +4414,17 @@ class MillesimeCard extends HTMLElement {
       })
     );
 
-    // Retirer tout le vin (toutes ses bouteilles)
+    // Retirer : v7.1.7 — une seule bouteille OU tout le vin. Avant, ce bouton
+    // supprimait toujours TOUS les exemplaires (un vin = une fiche + N
+    // emplacements) : impossible de retirer une bouteille sans la marquer bue.
     box.querySelector("#det-remove")?.addEventListener("click", async () => {
       const cnt = wine.slots?.length || 0;
-      const msg = cnt > 1
-        ? `Retirer "${wine.name}" et ses ${cnt} emplacements de la cave ?`
-        : `Retirer "${wine.name}" de la cave ?`;
-      if (await this._confirm(msg)) {
+      if (cnt > 1) {
+        this._closeModal();
+        this._openModal("removepick", { wine });   // choix de l'emplacement
+        return;
+      }
+      if (await this._confirm(`Retirer "${wine.name}" de la cave ?`)) {
         this._selected = null;
         await this._callService("remove_wine", { wine_id: wine.id });
       }
@@ -8246,6 +8321,17 @@ const MODAL_CSS = `
 .mm-body .seg3--sub { border-color:#5a2a33; background:rgba(123,29,46,0.10); }
 .mm-body .seg3--sub .seg3-btn { border-right-color:#5a2a33; }
 .mm-body .seg3--sub .seg3-btn.active { background:#7B1D2E; }
+/* ── Retrait ciblé d'une bouteille (v7.1.7) ── */
+.rp-list { display:flex; flex-direction:column; gap:7px; }
+.rp-item {
+  display:flex; align-items:center; gap:10px; width:100%; padding:13px 14px;
+  background:var(--mm-bg2); border:1px solid var(--mm-border); border-radius:10px;
+  color:var(--mm-text); font-size:0.92em; cursor:pointer; text-align:left; transition:all 0.13s;
+}
+.rp-item:hover { border-color:#8c0a0a; background:rgba(140,10,10,0.14); }
+.rp-loc { font-weight:600; }
+.rp-meta { color:var(--mm-muted); font-size:0.82em; }
+.rp-act { margin-left:auto; color:#ff6b6b; font-size:0.84em; font-weight:600; }
 /* Filtres du Profil de garde (v7.0.1) */
 .apo-filters { display:flex; gap:8px; margin-bottom:12px; }
 /* ── Personnalisation des icônes (v7.1.0) ── */
