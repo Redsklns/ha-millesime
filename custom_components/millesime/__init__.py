@@ -1,4 +1,4 @@
-"""Millésime v7.1.7 — Cave à Vin pour Home Assistant.
+"""Millésime v7.1.8 — Cave à Vin pour Home Assistant.
 
 Modèles Gemini  : découverts dynamiquement au démarrage (GET /models sur la clé
                   de l'utilisateur), avec repli sur les modèles stables 2.5 flash.
@@ -36,7 +36,7 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN    = "millesime"
 PLATFORMS = ["sensor"]
 DATA_FILE = "millesime_data.json"
-VERSION   = "7.1.7"
+VERSION   = "7.1.8"
 
 OFF_UA       = f"Millesime-HA/{VERSION} (github.com/Redsklns/ha-millesime)"
 # Deux modèles séparés = deux pools de quota indépendants (free tier)
@@ -482,12 +482,102 @@ Règles :
 - Priorité : vins français > européens > mondiaux\
 """
 
+# ── Prompt ALLÉGÉ pour la recherche interactive (v7.1.8) ─────────────────────
+# POURQUOI DEUX PROMPTS : le schéma complet ci-dessus (16 champs, dont un profil
+# aromatique sur 11 séries et une structure sur 6 axes) coûte 300 à 400 tokens
+# PAR VIN. Multiplié par 6 résultats, la réponse dépassait le budget de sortie
+# et revenait COUPÉE EN PLEIN MILIEU — d'où les « parse_error » signalés en
+# 7.1.7 alors que Gemini répondait parfaitement.
+# La recherche interactive (ajout d'un vin) n'a pas besoin de ces deux profils :
+# ils ne servent qu'une fois le vin retenu, et « ♻️ Compléter les fiches » les
+# remplit ensuite. On les retire donc ICI SEULEMENT — le prompt complet reste
+# utilisé par le rattrapage, qui ne traite qu'un vin à la fois.
+_GEMINI_SYSTEM_LIGHT = """\
+Tu es un expert mondial en vins et sommelière.
+Retourne UNIQUEMENT un tableau JSON valide [], sans markdown ni backticks.
+Chaque objet doit avoir exactement ces champs (string, jamais null) :
+  name, vintage, type, shape, appellation, region, country, producer,
+  tasting_notes, food_pairing, drink_from, drink_until, vivino_rating, price
+Règles :
+- type : "red" | "white" | "rose" | "sparkling" | "dessert" uniquement
+- shape : forme de la bouteille, "bordeaux" | "bourgogne" | "champagne" | "flute" | "rose" | "loire" | "" (vide si incertain). Bordeaux=épaules marquées ; bourgogne=épaules tombantes ; champagne=épaisse à base large ; flute=fine et haute (Alsace) ; rose=type Provence ; loire=ligérienne
+- vintage / drink_from / drink_until : "YYYY" ou ""
+- drink_from / drink_until : fenêtre d'apogée RESSERRÉE et réaliste, calculée depuis
+  le millésime selon le potentiel de garde réel. Largeur typique 3 à 6 ans (vins
+  courants), 6 à 10 ans (grands vins de garde), 1 à 3 ans (primeurs, rosés,
+  blancs vifs). JAMAIS plus de 12 ans d'écart.
+- vivino_rating : décimal 0.0–5.0 (0 si inconnu)
+- price : prix moyen constaté en euros, UNIQUEMENT le nombre décimal (ex: 18.5). 0.0 si inconnu.
+- tasting_notes : 1 phrase courte en français
+- food_pairing : 2 accords en français séparés par une virgule
+- Couvrir différents millésimes si possible
+- Priorité : vins français > européens > mondiaux\
+"""
+
 
 def _safe_float(value, default: float = 0.0) -> float:
     try:
         return float(str(value).replace(",", ".")) if value else default
     except (ValueError, TypeError):
         return default
+
+
+def _json_salvage(txt: str):
+    """Récupère ce qui est exploitable dans un JSON incomplet (v7.1.8).
+
+    POURQUOI : quand la réponse est coupée par la limite de tokens, elle
+    s'arrête en plein milieu d'un champ. `json.loads` refuse alors TOUT, et
+    l'utilisateur ne voit rien — alors que les premiers vins de la liste sont
+    parfaitement complets. On récupère donc les objets entiers et on abandonne
+    seulement le dernier, tronqué.
+
+    Retourne l'objet/tableau récupéré, ou None si rien n'est exploitable.
+    """
+    if not txt:
+        return None
+    s = txt.strip()
+
+    # Cas 1 — tableau : on extrait les objets de premier niveau complets
+    if s.startswith("["):
+        objs, depth, start, in_str, esc = [], 0, None, False, False
+        for i, ch in enumerate(s):
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0 and start is not None:
+                    frag = s[start:i + 1]
+                    try:
+                        objs.append(json.loads(frag))
+                    except Exception:
+                        pass                     # objet malformé → ignoré
+                    start = None
+        return objs or None
+
+    # Cas 2 — objet unique : on tente de le refermer proprement
+    if s.startswith("{"):
+        for cut in range(len(s), 0, -1):
+            frag = s[:cut].rstrip().rstrip(",")
+            for suffix in ("", "}", '"}', "]}", '"]}'):
+                try:
+                    return json.loads(frag + suffix)
+                except Exception:
+                    continue
+            if len(s) - cut > 4000:              # garde-fou : on n'insiste pas
+                break
+    return None
 
 
 def _gemini_text(data: dict) -> tuple[str, str]:
@@ -531,7 +621,7 @@ def _gemini_payload(data: dict):
         return json.loads(txt)
     except Exception:
         pass
-    # Dernier recours : isoler le plus grand bloc { … } ou [ … ]
+    # Recours 1 : isoler le plus grand bloc { … } ou [ … ]
     for op, cl in (("{", "}"), ("[", "]")):
         i, j = txt.find(op), txt.rfind(cl)
         if i != -1 and j > i:
@@ -539,16 +629,29 @@ def _gemini_payload(data: dict):
                 return json.loads(txt[i:j + 1])
             except Exception:
                 continue
+    # Recours 2 (v7.1.8) : réponse coupée par la limite de tokens → on sauve
+    # ce qui est complet plutôt que de tout perdre
+    salvaged = _json_salvage(txt)
+    if salvaged:
+        _LOGGER.warning(
+            "Gemini — réponse coupée (finishReason=%s), contenu partiel récupéré", finish or "?")
+        return salvaged
     raise ValueError(f"JSON introuvable (finishReason={finish or '?'}, {len(raw)} car.)")
 
 
-def _parse_gemini_response(raw: str, source: str) -> tuple[list[dict], str | None]:
+def _parse_gemini_response(raw: str, source: str, finish: str = "") -> tuple[list[dict], str | None]:
     """Parse la réponse JSON de Gemini.
+
+    v7.1.8 : en cas de réponse COUPÉE (limite de tokens), on récupère les vins
+    complets au lieu de tout rejeter, et on journalise le finishReason — sans
+    lui, ce chemin était aveugle et une troncature ressemblait à un bug de
+    format (cause des « parse_error » de la 7.1.7).
 
     Retourne (résultats, code_erreur_ou_None).
     """
     if not raw:
-        return [], ERR_PARSE_ERROR
+        _LOGGER.warning("Gemini — réponse vide (%s, finishReason=%s)", source, finish or "?")
+        return [], ERR_TRUNCATED if finish == "MAX_TOKENS" else ERR_PARSE_ERROR
 
     # Nettoyer les backticks résiduels
     raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
@@ -557,8 +660,19 @@ def _parse_gemini_response(raw: str, source: str) -> tuple[list[dict], str | Non
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        _LOGGER.warning("Gemini — JSON invalide (%s) : %.200s", source, raw)
-        return [], ERR_PARSE_ERROR
+        # Réponse probablement tronquée : on sauve les objets entiers
+        parsed = _json_salvage(raw)
+        if parsed:
+            _LOGGER.warning(
+                "Gemini — réponse coupée (%s, finishReason=%s) : %d résultat(s) récupéré(s)",
+                source, finish or "?", len(parsed) if isinstance(parsed, list) else 1,
+            )
+        else:
+            _LOGGER.warning(
+                "Gemini — JSON illisible (%s, finishReason=%s, %d car.) : %.200s",
+                source, finish or "?", len(raw), raw,
+            )
+            return [], ERR_TRUNCATED if finish == "MAX_TOKENS" else ERR_PARSE_ERROR
 
     if not isinstance(parsed, list):
         parsed = [parsed]
@@ -673,10 +787,16 @@ async def _gemini_call(
                         data = await resp.json(content_type=None)
                         _LOGGER.debug("%s : réponse de %s", label, model)
                         return data, None
-                    if status == 400 and attempt == 0 and _thinking_cfg(model):
-                        # Ce modèle n'accepte peut-être pas le réglage thinking :
-                        # on retente une fois sans, avant de conclure à une erreur.
-                        _LOGGER.debug("%s : 400 avec thinkingConfig (%s), réessai sans", label, model)
+                    if status in (400, 500, 503) and attempt == 0 and _thinking_cfg(model):
+                        # v7.1.8 : un modèle qui n'accepte pas le réglage thinking
+                        # ne répond PAS toujours 400 — Google renvoie parfois 500
+                        # sur un champ de configuration non supporté. On ne se
+                        # limite donc plus au 400 : sinon l'appel échouait sur
+                        # tous les modèles en « service indisponible », alors
+                        # qu'un simple réessai sans le réglage aurait suffi.
+                        _LOGGER.warning(
+                            "%s : HTTP %s avec thinkingConfig (%s) → réessai sans ce réglage",
+                            label, status, model)
                         continue
                     if status == 404:
                         saw_404 = True
@@ -718,33 +838,43 @@ async def _gemini_call(
 # ── Recherche Gemini par texte ────────────────────────────────────────────────
 
 async def _gemini_search_text(
-    hass: HomeAssistant, query: str, api_key: str
+    hass: HomeAssistant, query: str, api_key: str, full: bool = False
 ) -> tuple[list[dict], str | None]:
     """Recherche Gemini via texte.
 
+    v7.1.8 — DEUX MODES, car cette fonction sert à deux usages très différents :
+      • full=False (défaut) : recherche interactive à l'ajout d'un vin. Schéma
+        ALLÉGÉ et 5 résultats — c'est la combinaison « 6 vins × 16 champs » qui
+        dépassait le budget de sortie et renvoyait un JSON coupé (« parse_error »).
+      • full=True : « ♻️ Compléter les fiches ». Schéma COMPLET (profil
+        aromatique + structure), mais 3 résultats seulement puisqu'un seul est
+        retenu — le volume reste donc maîtrisé.
+
     Retourne (résultats, code_erreur_ou_None).
     """
+    nb = 3 if full else 5
     body_base = {
-        "system_instruction": {"parts": [{"text": _GEMINI_SYSTEM}]},
+        "system_instruction": {"parts": [{"text": _GEMINI_SYSTEM if full else _GEMINI_SYSTEM_LIGHT}]},
         "contents": [{"parts": [{"text": (
             f'Recherche de vin : "{query}"\n'
-            f"Retourne jusqu'à 6 vins correspondants."
+            f"Retourne jusqu'à {nb} vins correspondants."
         )}]}],
     }
-    # v7.1.5 : appel unifié (thinking désactivé, repli de modèle, erreurs précises).
-    # Délai porté à 30 s : la marge de 15 s était trop juste dès que le modèle
-    # prenait le temps de répondre, d'où de faux « service indisponible ».
+    # Budget de sortie LARGE : ce plafond n'est pas facturé (seuls les tokens
+    # réellement produits le sont), c'est donc une assurance gratuite contre la
+    # troncature. Le mode complet est plus verbeux par vin, d'où sa marge.
     data, code = await _gemini_call(
         hass, api_key, _text_models(), body_base,
-        {"temperature": 0.2, "maxOutputTokens": 2048, "responseMimeType": "application/json"},
-        30, f"Gemini texte '{query}'",
+        {"temperature": 0.2, "maxOutputTokens": 8192 if full else 4096,
+         "responseMimeType": "application/json"},
+        45, f"Gemini texte '{query}'",
     )
     if data is None:
         return [], code or ERR_UNAVAILABLE
     _bump_ai_usage(hass, data)
     try:
-        raw, _finish = _gemini_text(data)          # v7.1.6 : toutes les parties
-        results, err = _parse_gemini_response(raw, f"texte:'{query}'")
+        raw, finish = _gemini_text(data)           # v7.1.6 : toutes les parties
+        results, err = _parse_gemini_response(raw, f"texte:'{query}'", finish)
         _LOGGER.info("Gemini texte: %d résultat(s) pour '%s'", len(results), query)
         return results, err
 
@@ -825,9 +955,15 @@ async def _gemini_pair_menu(
     sys = (
         "Tu es sommelier de la maison : tu composes avec la cave EXISTANTE, pour un repas complet. "
         "On te donne un menu (certains services peuvent être vides) et la liste des vins disponibles avec leur id. "
-        "Choisis 1 bouteille si un vin polyvalent couvre bien l'ensemble, 2 au maximum si l'écart entre services l'exige "
-        "(petit repas = éviter d'ouvrir trop de bouteilles). Privilégie, à accord équivalent, les vins DANS leur fenêtre "
-        "d'apogée, surtout ceux proches de la fin de fenêtre. N'invente aucun vin : uniquement les id fournis. "
+        "OBJECTIF PRIORITAIRE : ouvrir le MOINS de bouteilles possible. Vise UNE seule bouteille polyvalente "
+        "couvrant tout le menu. N'en propose une DEUXIÈME que si un service est vraiment inconciliable avec la "
+        "première. JAMAIS plus de 2 bouteilles au total, quel que soit le nombre de services — une seule bouteille "
+        "peut parfaitement couvrir deux ou trois services. "
+        "NE RENONCE JAMAIS : si aucun vin de la cave n'est en accord idéal avec un service, propose quand même "
+        "celui qui s'en approche le plus parmi les vins disponibles, et signale la réserve dans 'note'. Un accord "
+        "imparfait est toujours préférable à une absence de proposition. "
+        "Privilégie, à accord équivalent, les vins DANS leur fenêtre d'apogée, surtout ceux proches de la fin de "
+        "fenêtre. N'invente aucun vin : uniquement les id fournis. "
         "Réponds STRICTEMENT en JSON : "
         '{"choices":[{"id":"...","covers":"entrée + plat","reason":"une phrase"}],'
         '"service":"ordre de service, carafage et températures en 1-2 phrases",'
@@ -839,7 +975,7 @@ async def _gemini_pair_menu(
         f"- Dessert : {menu.get('dessert') or '(aucun)'}\n\n"
         f"Vins disponibles (JSON) :\n{json.dumps(_cellar_ai_summary(wines), ensure_ascii=False)}"
     )
-    return await _gemini_json(hass, api_key, sys, user, temperature=0.3, max_tokens=2048)
+    return await _gemini_json(hass, api_key, sys, user, temperature=0.3, max_tokens=4096)
 
 
 async def _gemini_craving(
@@ -873,7 +1009,7 @@ async def _gemini_craving(
         f"Couleur souhaitée : {color_lbl or 'indifférent'}\n\n"
         f"Vins disponibles (JSON) :\n{json.dumps(_cellar_ai_summary(wines), ensure_ascii=False)}"
     )
-    return await _gemini_json(hass, api_key, sys, user, temperature=0.3, max_tokens=1024)
+    return await _gemini_json(hass, api_key, sys, user, temperature=0.3, max_tokens=2048)
 
 
 async def _gemini_audit_cellar(
@@ -898,7 +1034,7 @@ async def _gemini_audit_cellar(
         f"Région prioritaire : {region or 'toutes régions'}\n\n"
         f"Cave actuelle (JSON) :\n{json.dumps(_cellar_ai_summary(wines), ensure_ascii=False)}"
     )
-    return await _gemini_json(hass, api_key, sys, user, temperature=0.4, max_tokens=2560)
+    return await _gemini_json(hass, api_key, sys, user, temperature=0.4, max_tokens=4096)
 
 
 async def _gemini_opportunity(
@@ -924,7 +1060,7 @@ async def _gemini_opportunity(
         f'Vin repéré en magasin : "{wine_text}"\n\n'
         f"Cave actuelle (JSON) :\n{json.dumps(_cellar_ai_summary(wines), ensure_ascii=False)}"
     )
-    return await _gemini_json(hass, api_key, sys, user, temperature=0.3, max_tokens=1536)
+    return await _gemini_json(hass, api_key, sys, user, temperature=0.3, max_tokens=3072)
 
 
 # ── Lecture d'étiquette par photo ─────────────────────────────────────────────
@@ -945,7 +1081,14 @@ async def _gemini_analyze_photo(
     )
 
     body = {
-        "system_instruction": {"parts": [{"text": _GEMINI_SYSTEM}]},
+        # v7.1.8 : schéma ALLÉGÉ ici aussi. Vérifié de bout en bout : ni la carte
+        # ni le service add_wine/update_wine ne transportent aroma_profile ni
+        # structure_profile — ces deux champs étaient donc générés puis JETÉS à
+        # chaque scan. Les demander coûtait des tokens, du temps et du risque de
+        # troncature, pour rien. Seul « ♻️ Compléter les fiches » les enregistre
+        # réellement (il écrit directement dans les données), et il conserve le
+        # schéma complet.
+        "system_instruction": {"parts": [{"text": _GEMINI_SYSTEM_LIGHT}]},
         "contents": [{
             "parts": [
                 {"text": photo_prompt},
@@ -957,7 +1100,10 @@ async def _gemini_analyze_photo(
     # consommait le budget de sortie et allongeait la lecture d'étiquette).
     # Le réessai temporisé sur panne passagère est conservé, mais on ne réessaie
     # QUE ce qui a une chance d'aboutir (5xx / délai), pas un quota ni un 404.
-    gen = {"temperature": 0.1, "maxOutputTokens": 2048, "responseMimeType": "application/json"}
+    # v7.1.8 : la photo ne renvoie QU'UN vin → le schéma complet (profils
+    # aromatique et structure) est conservé, c'est tout l'intérêt du scan.
+    # Budget doublé par sécurité : plafond non facturé.
+    gen = {"temperature": 0.1, "maxOutputTokens": 4096, "responseMimeType": "application/json"}
     data, last_code = None, ERR_UNAVAILABLE
     for attempt in range(2):
         data, last_code = await _gemini_call(
@@ -973,16 +1119,12 @@ async def _gemini_analyze_photo(
         return [], last_code or ERR_UNAVAILABLE
     _bump_ai_usage(hass, data)
 
-    # Parsing de la réponse (v7.1.6 : lecture de TOUTES les parties)
+    # Parsing (v7.1.8 : le finishReason est transmis, et la récupération d'une
+    # réponse coupée est désormais centralisée dans _parse_gemini_response —
+    # l'ancien rafistolage maison ajoutait parfois des accolades en trop)
     raw, finish = _gemini_text(data)
-    if finish == "MAX_TOKENS":
-        _LOGGER.warning("Gemini photo : réponse tronquée (MAX_TOKENS)")
-    # Réparation d'un tableau JSON coupé net par la limite de tokens
-    raw = raw.strip()
-    if raw.startswith("[") and not raw.endswith("]"):
-        raw = raw.rstrip(",").rstrip() + ("}]" if not raw.endswith("}") else "]")
     try:
-        results, err = _parse_gemini_response(raw, "photo")
+        results, err = _parse_gemini_response(raw, "photo", finish)
     except Exception as exc:
         _LOGGER.warning("Gemini photo : erreur de lecture (%s)", exc)
         return [], ERR_TRUNCATED if finish == "MAX_TOKENS" else ERR_PARSE_ERROR
@@ -1031,7 +1173,7 @@ async def _gemini_pair_food(
     # (l'accord sur un menu complet envoie tout le catalogue de la cave).
     data, code = await _gemini_call(
         hass, api_key, _text_models(), body,
-        {"temperature": 0.3, "maxOutputTokens": 2048, "responseMimeType": "application/json"},
+        {"temperature": 0.3, "maxOutputTokens": 4096, "responseMimeType": "application/json"},
         45, f"Gemini accords '{dish}'",
     )
     if data is None:
@@ -1203,14 +1345,42 @@ async def _off_search(hass: HomeAssistant, query: str) -> list[dict]:
 
 # ── Orchestrateur principal ───────────────────────────────────────────────────
 
+def _canonical_region(d: dict, region: str) -> str:
+    """Aligne une région sur la graphie déjà utilisée en cave (v7.1.8).
+
+    « Vallée de la Loire » et « Vallée De La Loire » désignent la même région :
+    à l'ajout ou l'édition d'un vin, si la région saisie correspond (casse et
+    accents ignorés) à une région existante, on réutilise la graphie MAJORITAIRE
+    de la cave. Empêche la création de nouveaux doublons sans jamais modifier
+    les fiches existantes.
+    """
+    key = _normalize(region or "")
+    if not key:
+        return region or ""
+    counts: dict[str, int] = {}
+    for w in d.get("wines", []):
+        r = (w.get("region") or "").strip()
+        if r and _normalize(r) == key:
+            counts[r] = counts.get(r, 0) + 1
+    if not counts:
+        return (region or "").strip()
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+
 async def _search_wines(
-    hass: HomeAssistant, query: str, gemini_key: str = ""
+    hass: HomeAssistant, query: str, gemini_key: str = "", full: bool = False
 ) -> dict:
     """Orchestrer la recherche texte.
 
+    v7.1.8 : `full` distingue la recherche interactive (schéma allégé) du
+    rattrapage « Compléter les fiches » (schéma complet). Le mode fait PARTIE
+    DE LA CLÉ DE CACHE : sans cela, une recherche interactive allégée servirait
+    de réponse au rattrapage, qui n'obtiendrait jamais les profils manquants.
+
     Retourne {"results": [...], "error": null|code, "source": "gemini"|"off"}.
     """
-    cache_key = _normalize(query) + ("_g" if gemini_key else "_o")
+    cache_key = _normalize(query) + ("_g" if gemini_key else "_o") + ("_f" if full else "")
     if cache_key in _SEARCH_CACHE:
         ts, cached = _SEARCH_CACHE[cache_key]
         if time.time() - ts < _CACHE_TTL:
@@ -1218,7 +1388,7 @@ async def _search_wines(
             return cached
 
     if gemini_key:
-        results, err = await _gemini_search_text(hass, query, gemini_key)
+        results, err = await _gemini_search_text(hass, query, gemini_key, full=full)
         if err == ERR_QUOTA_EXCEEDED:
             # Quota dépassé → fallback OFF + signaler l'erreur
             _LOGGER.warning("Quota Gemini dépassé, fallback OFF")
@@ -1708,7 +1878,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # réponse revenait vide. Thinking désactivé + marge portée à 256 tokens.
         data_r, code = await _gemini_call(
             hass, gkey, _text_models(), body,
-            {"temperature": 0.1, "maxOutputTokens": 256}, 30, "estimate_price",
+            {"temperature": 0.1, "maxOutputTokens": 512}, 30, "estimate_price",
         )
         if data_r is None:
             connection.send_result(msg["id"], {"price": 0, "error": code or ERR_UNAVAILABLE})
@@ -1824,7 +1994,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "type":         call.data.get("type", "red"),
             "shape":        call.data.get("shape", ""),
             "appellation":  call.data.get("appellation", ""),
-            "region":       call.data.get("region", ""),
+            "region":       _canonical_region(d, call.data.get("region", "")),   # v7.1.8 : anti-doublon de graphie
             "producer":     call.data.get("producer", ""),
             "country":      call.data.get("country", ""),
             "price":        float(call.data.get("price", 0)),
@@ -1858,7 +2028,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if w["id"] == call.data["wine_id"]:
                 for k in updatable:
                     if k in call.data:
-                        w[k] = call.data[k]
+                        # v7.1.8 : la région s'aligne sur la graphie majoritaire
+                        # de la cave (anti-doublons « Vallée de la Loire » /
+                        # « Vallée De La Loire »)
+                        w[k] = _canonical_region(d, call.data[k]) if k == "region" else call.data[k]
                 break
         await _persist(d)
 
@@ -2272,7 +2445,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if len(query) < 3:
                 continue
             try:
-                res = await _search_wines(hass, query, gemini_key)
+                # v7.1.8 : schéma COMPLET ici — c'est ce passage qui remplit
+                # le profil aromatique et la structure des fiches existantes
+                res = await _search_wines(hass, query, gemini_key, full=True)
             except Exception as exc:            # quota, réseau… on continue
                 _LOGGER.warning("Millésime — refresh '%s' ignoré : %s", query, exc)
                 continue
