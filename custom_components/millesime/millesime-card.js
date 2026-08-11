@@ -1358,7 +1358,9 @@ class MillesimeCard extends HTMLElement {
         .mm-aiprog-fill { height:100%; width:5%; background:linear-gradient(90deg,#7B1D2E,#C0392B); border-radius:4px; transition:width 0.5s ease; }
         .mm-aiprog-tokens { font-size:0.78em; color:#9c8a7a; font-variant-numeric:tabular-nums; }
         .mm-aiprog.mm-aiprog--done .mm-aiprog-fill { background:linear-gradient(90deg,#2E5C3B,#3f7a50); }
-        .mm-aiprog.mm-aiprog--err  .mm-aiprog-fill { background:#8a2b2b; }`;
+        .mm-aiprog.mm-aiprog--err  .mm-aiprog-fill { background:#8a2b2b; }
+        /* Grand écran : suit la base fluide des popups (mobile : 13px d'origine) */
+        @media (min-width: 800px) { .mm-aiprog { font-size:clamp(14px, 2vw, 18px); } }`;
       document.head.appendChild(st);
     }
     const el = document.createElement("div");
@@ -1558,6 +1560,8 @@ class MillesimeCard extends HTMLElement {
         .mm-toast--warning { background:#2A1E00; color:#ffc85a; border:1px solid #5A3F00; }
         .mm-toast--info    { background:#0A1A2A; color:#7db8f7; border:1px solid #1A4070; }
         .mm-toast--success { background:#0A2A15; color:#6ee098; border:1px solid #1A5030; }
+        /* Grand écran : suit la base fluide des popups (mobile : 13px d'origine) */
+        @media (min-width: 800px) { .mm-toast { font-size:clamp(14px, 2vw, 18px); } }
       `;
       document.head.appendChild(s);
     }
@@ -1578,7 +1582,10 @@ class MillesimeCard extends HTMLElement {
       overlay.style.fontFamily = this._fontSans || "'Inter', sans-serif";
       overlay.style.fontSize   = this._fsModalCss || ((this._fsBase || 14) + 'px');
       const box = document.createElement("div");
-      box.style.cssText = "background:#111;border:1px solid #333;border-radius:14px;padding:22px 24px;max-width:360px;width:90%;color:#EDE0CC;font-size:1em;line-height:1.6;box-shadow:0 8px 32px rgba(0,0,0,0.6)";
+      // Mobile : largeur d'origine (intouchée) ; grand écran : plus de taille figée → s'ajuste au contenu.
+      const _confW = (typeof window !== "undefined" && window.innerWidth >= 800)
+        ? "width:fit-content;max-width:min(60vw,36rem)" : "max-width:360px;width:90%";
+      box.style.cssText = "background:#111;border:1px solid #333;border-radius:14px;padding:22px 24px;" + _confW + ";color:#EDE0CC;font-size:1em;line-height:1.6;box-shadow:0 8px 32px rgba(0,0,0,0.6)";
       const p = document.createElement("p");
       p.textContent = message;
       p.style.cssText = "margin:0 0 18px";
@@ -3632,6 +3639,14 @@ class MillesimeCard extends HTMLElement {
         .mm-bottle-panel .bp-label { font-size:7px; max-width:128px; margin:0 auto 9px; }
         .mm-bottle-panel .bp-photo { max-width:120px; margin:0 auto 9px; border-radius:8px; overflow:hidden; background:#15110d; }
         .mm-bottle-panel .bp-photo img { display:block; width:100%; max-height:150px; object-fit:contain; }
+        /* Grand écran (≥800px) : plus de largeur figée — l'aperçu se dimensionne à son contenu,
+           et l'étiquette/photo suivent la police (en em) au lieu de rester en px. */
+        @media (min-width: 800px) {
+          .mm-bottle-panel { width:fit-content; max-width:min(40vw, 30rem); }
+          .mm-bottle-panel .bp-label { font-size:0.5em; max-width:9.2em; }
+          .mm-bottle-panel .bp-photo { max-width:8.6em; }
+          .mm-bottle-panel .bp-photo img { max-height:10.7em; }
+        }
       `;
       document.head.appendChild(st);
     }
@@ -3644,6 +3659,9 @@ class MillesimeCard extends HTMLElement {
 
     const panel = document.createElement("div");
     panel.className = "mm-bottle-panel";
+    // Hors conteneur (document.body) → poser la base fluide comme les modales,
+    // sinon le contenu en em retombe sur la police par défaut du body.
+    panel.style.fontSize = this._fsModalCss || ((this._fsBase || 14) + 'px');
     panel.innerHTML = `
       ${wine.image_url
         ? `<div class="bp-photo"><img src="${esc(wine.image_url)}" alt=""></div>`
@@ -7870,6 +7888,12 @@ const CARD_CSS = `<style>
 /* Base de police appliquée ici (descendant du conteneur :host) pour que le clamp
    en cqi de --fs-base se mesure sur la largeur de la CARTE, pas du viewport. */
 .card { background:var(--bg-0); border-radius:18px; overflow:hidden; border:1px solid var(--border); font-size:var(--fs-base, 13px); }
+/* Grand écran : les contrôles (button/select/input) n'héritent pas de la police par
+   défaut (UA ~13px système) → uniformise sur la base fluide. :where = spécificité
+   nulle, toute taille explicite d'une classe garde la priorité. Mobile inchangé. */
+@media (min-width: 800px) {
+  :where(.card) :where(button, input, select, textarea) { font-family:inherit; font-size:inherit; }
+}
 
 .loading-state { display:flex; align-items:center; justify-content:center; height:180px; }
 .loading-glass { width:36px; opacity:0.5; animation:pulse-anim 1.4s ease-in-out infinite; }
@@ -8342,6 +8366,21 @@ const MODAL_CSS = `
 .apo-top-name i { color:var(--mm-muted); font-style:normal; }
 .apo-top-until { color:var(--mm-accent); font-weight:600; white-space:nowrap; font-size:0.88em; }
 .apo-hint, .acc-hint { font-size:0.82em; color:var(--mm-muted); margin-bottom:12px; line-height:1.4; }
+/* Grand écran uniquement (le mobile garde ses tailles d'origine, non testées) :
+   textes explicatifs des popups un peu plus lisibles, largeurs non figées. */
+@media (min-width: 800px) {
+  /* Les contrôles de formulaire n'héritent PAS de la police par défaut (UA ~13px
+     système) → boutons/champs plus petits que le texte voisin. Reset à spécificité
+     NULLE (:where) : toute taille explicite posée par une classe garde la priorité. */
+  :where(.mm-overlay) :where(button, input, select, textarea) { font-family:inherit; font-size:inherit; }
+  .mm-overlay .acc-hint, .mm-overlay .apo-hint, .mm-overlay .occ-hint { font-size:0.92em; line-height:1.45; }
+  .mm-overlay .mm-hint { font-size:0.9em; line-height:1.45; }
+  .mm-overlay .mm-photo-hint { font-size:0.9em; }
+  .mm-box      { width:clamp(34rem, 60vw, 60rem); max-width:none; }
+  .mm-box-wide { width:min(90vw, 80rem); max-width:none; }
+  /* Étiquette générée sur la fiche : suit la police de la modale (px figés sur mobile) */
+  .mm-detail-label { font-size:0.79em; max-width:11.8em; }
+}
 .apo-states { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .apo-state {
   display:flex; align-items:center; gap:8px; padding:12px 10px;

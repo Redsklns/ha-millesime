@@ -209,6 +209,102 @@ update_rack:
     orientation:
       description: Sens de départ
 
+add_wine:
+  name: Ajouter un vin
+  description: Crée un vin avec un premier emplacement. Mêmes champs qu'add_bottle (sans quantity).
+  fields:
+    rack_id:
+      description: ID du casier
+      required: true
+    slot:
+      description: Numéro d'emplacement
+      required: true
+    name:
+      description: Nom du vin
+      required: true
+    size:
+      description: "Format de la bouteille (défaut : 75cl ; ex. : 150cl)"
+    favorite:
+      description: Coup de cœur (booléen)
+    slot_comment:
+      description: Commentaire propre à cette bouteille (emplacement)
+    added_date:
+      description: Date d'ajout (YYYY-MM-DD, défaut aujourd'hui)
+
+update_wine:
+  name: Modifier un vin
+  description: Met à jour les métadonnées d'un vin (tous ses emplacements).
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+
+remove_wine:
+  name: Supprimer un vin
+  description: Supprime un vin et tous ses emplacements.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+
+add_slot:
+  name: Ajouter un emplacement
+  description: Ajoute un emplacement (exemplaire) à un vin existant.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+    rack_id:
+      description: ID du casier
+      required: true
+    slot:
+      description: Numéro d'emplacement
+      required: true
+    comment:
+      description: Commentaire propre à cette bouteille
+    size:
+      description: "Format propre à cette bouteille (sinon celui du vin ; ex. : 150cl)"
+
+update_slot:
+  name: Modifier une bouteille
+  description: Met à jour le format et/ou le commentaire d'une bouteille (emplacement) sans la déplacer. Champ vidé → retour à la valeur du vin.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+    slot_idx:
+      description: Index de l'emplacement (0 = premier)
+    size:
+      description: Format de cette bouteille (ex. 150cl)
+    comment:
+      description: Commentaire de cette bouteille
+
+move_slot:
+  name: Déplacer un emplacement
+  description: Déplace un emplacement d'un vin vers une nouvelle position.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+    slot_idx:
+      description: Index de l'emplacement à déplacer (0 = premier)
+    rack_id:
+      description: ID du casier de destination
+      required: true
+    slot:
+      description: Numéro d'emplacement de destination
+      required: true
+
+remove_slot:
+  name: Retirer un emplacement
+  description: Retire un emplacement d'un vin. Supprime le vin si c'était le dernier.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+    slot_idx:
+      description: Index de l'emplacement à retirer (0 = premier)
+
 swap_slots:
   name: Permuter deux emplacements
   description: Échange atomiquement les positions de deux bouteilles (fonctionne cave pleine).
