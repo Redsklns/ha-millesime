@@ -1,5 +1,5 @@
 /**
- * Millésime Card v7.1.7
+ * Millésime Card v7.1.8
  * Cave à vin pour Home Assistant
  * - Recherche texte avec suggestions temps réel
  * - Lecture d'étiquette par photo (Gemini Vision)
@@ -7,7 +7,7 @@
  * - Journal de dégustation, recherche dans la cave, déplacement de casier
  */
 
-const MILLESIME_CARD_VERSION = "7.1.7";
+const MILLESIME_CARD_VERSION = "7.1.8";
 
 // ── Budget quotidien Gemini (free tier) ─────────────────────────────────────
 // Estimation codée en dur : ~250 requêtes/jour (Gemini 2.5 Flash, quotas
@@ -2476,9 +2476,29 @@ class MillesimeCard extends HTMLElement {
     if (!wine) renderPicker();
   }
 
+  // ── Casiers toutes caves confondues (v7.1.8) ──────────────────────────────
+  // Le déplacement d'une bouteille ne listait que les casiers de la cave
+  // COURANTE : transférer un vin vers une autre cave était impossible depuis
+  // l'interface, alors que le backend le permet déjà (un emplacement ne connaît
+  // que son rack_id). Ces deux aides donnent accès à l'ensemble des casiers.
+  _allRacks() {
+    const out = [];
+    for (const c of (this._data?.cellars || [])) {
+      for (const r of (c.racks || [])) out.push({ ...r, _cellarName: c.name || "Cave", _cellarId: c.id });
+    }
+    if (!out.length) {   // repli : ancienne charge utile sans « cellars »
+      for (const r of (this._data?.cellar?.racks || [])) out.push({ ...r, _cellarName: "", _cellarId: "" });
+    }
+    return out;
+  }
+
+  _findRack(rackId) {
+    return this._allRacks().find(r => r.id === rackId) || null;
+  }
+
   _renderSlotPicker(box, rackSelectId, pickerId, slotInputId, excludeWineId = null, multiSelect = false) {
     const rackId   = box.querySelector(`#${rackSelectId}`)?.value;
-    const rack     = (this._data?.cellar?.racks || []).find(f => f.id === rackId);
+    const rack     = this._findRack(rackId);   // v7.1.8 : toutes caves
     const picker    = box.querySelector(`#${pickerId}`);
     const slotInput = box.querySelector(`#${slotInputId}`);
     if (!picker || !rack) return;
@@ -2549,25 +2569,34 @@ class MillesimeCard extends HTMLElement {
   // le casier n'en a qu'une.
 
   _slotLabel(s) {
-    const rack = (this._data?.cellar?.racks || []).find(f => f.id === s.rack_id);
+    // v7.1.8 : recherche dans TOUTES les caves — depuis que le transfert entre
+    // caves est possible, une bouteille peut se trouver hors de la cave
+    // affichée ; sans cela son emplacement s'affichait comme un identifiant brut.
+    const rack = this._findRack(s.rack_id);
     if (!rack) return `${s.rack_id} · n°${(s.slot || 0) + 1}`;
     const cols    = rack.columns || 8;
     const levels  = rack.layout === "stacked" ? Math.max(1, Math.min(4, rack.levels || 1)) : 1;
     const shelves = rack.shelves || Math.ceil((rack.slots || cols) / (cols * levels));
     const pos = (s.slot % cols) + 1;
+    let body;
     if (levels > 1) {
       // Superposition : rangée virtuelle → étagère physique + niveau (1 = haut de pile)
       const vr = Math.floor(s.slot / cols);
       const sh = Math.floor(vr / levels) + 1;
       const lv = (vr % levels) + 1;
-      return shelves > 1
+      body = shelves > 1
         ? `${rack.name} · ét. ${sh} · niv. ${lv} · n°${pos}`
         : `${rack.name} · niv. ${lv} · n°${pos}`;
+    } else {
+      const sh = Math.floor(s.slot / cols) + 1;
+      body = shelves > 1
+        ? `${rack.name} · ét. ${sh} · n°${pos}`
+        : `${rack.name} · n°${pos}`;
     }
-    const sh = Math.floor(s.slot / cols) + 1;
-    return shelves > 1
-      ? `${rack.name} · ét. ${sh} · n°${pos}`
-      : `${rack.name} · n°${pos}`;
+    // Nom de cave en préfixe si la bouteille est dans une AUTRE cave que l'affichée
+    const cur = this._data?.cellar?.id;
+    return (rack._cellarId && cur && rack._cellarId !== cur && rack._cellarName)
+      ? `${rack._cellarName} · ${body}` : body;
   }
 
   // Format effectif d'une bouteille : celui de l'emplacement, sinon celui du vin.
@@ -2937,7 +2966,17 @@ class MillesimeCard extends HTMLElement {
 
   _slotEditHTML(wine, slotIdx) {
     const s = wine.slots?.[slotIdx] || {};
-    const racks = this._data?.cellar?.racks || [];
+    // v7.1.8 : casiers de TOUTES les caves, groupés par cave → transfert possible
+    const racks = this._allRacks();
+    const byCellar = {};
+    for (const r of racks) (byCellar[r._cellarName || ""] ??= []).push(r);
+    const multiCave = Object.keys(byCellar).length > 1;
+    const rackOptions = multiCave
+      ? Object.entries(byCellar).map(([cave, rs]) => `
+          <optgroup label="${esc(cave)}">
+            ${rs.map(f => `<option value="${esc(f.id)}" ${f.id === s.rack_id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}
+          </optgroup>`).join("")
+      : racks.map(f => `<option value="${esc(f.id)}" ${f.id === s.rack_id ? "selected" : ""}>${esc(f.name)}</option>`).join("");
     return `
       <div class="mm-header">
         <span class="mm-title">🍾 Modifier la bouteille</span>
@@ -2962,9 +3001,9 @@ class MillesimeCard extends HTMLElement {
         </div>
         <!-- Déplacement tactile : alternative au glisser-déposer (inopérant au doigt en 2D) -->
         <div class="mm-field" style="margin-top:6px">
-          <label class="mm-label">📍 Déplacer cette bouteille</label>
+          <label class="mm-label">📍 Déplacer cette bouteille${multiCave ? " (toutes caves)" : ""}</label>
           <select class="mm-input" id="se-rack">
-            ${racks.map(f => `<option value="${esc(f.id)}" ${f.id === s.rack_id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}
+            ${rackOptions}
           </select>
           <input type="hidden" id="se-slot" value="${Number.isInteger(s.slot) ? s.slot : 0}">
           <div id="se-slot-picker" class="sp-picker"></div>
@@ -3000,7 +3039,7 @@ class MillesimeCard extends HTMLElement {
       // Casier changé : présélectionne le 1er emplacement libre du nouveau casier
       const rackId = box.querySelector("#se-rack").value;
       if (rackId !== cur.rack_id) {
-        const rack = (this._data?.cellar?.racks || []).find(f => f.id === rackId);
+        const rack = this._findRack(rackId);   // v7.1.8 : toutes caves
         const total = rack ? (rack.slots || (rack.columns || 8) * (rack.shelves || 2)) : 0;
         const taken = new Set();
         (this._data?.wines || []).forEach(w => w.slots?.forEach(sl => {
@@ -3300,16 +3339,31 @@ class MillesimeCard extends HTMLElement {
     const COLOR_ORDER = ["red", "white", "dessert", "rose", "sparkling"];
 
     // Regroupement Couleur → Région → vins (châteaux)
-    const groups = {};   // type → region → [wine]
+    // v7.1.8 : la CLÉ de groupe est NORMALISÉE (minuscules, sans accents) pour
+    // que « Vallée de la Loire » et « Vallée De La Loire » forment UN SEUL
+    // groupe — c'était deux sections séparées, signalé par la communauté.
+    // Le LIBELLÉ affiché est la variante la plus fréquente parmi les vins du
+    // groupe (non destructif : aucune donnée modifiée, pur affichage).
+    const groups = {};       // type → regionKey → [wine]
+    const regionLabels = {}; // regionKey → { variante: occurrences }
+    const normRegion = (s) => (s || "").trim().toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ");
     let totalSlots = 0;
     for (const w of wines) {
       const count = (w.slots || []).length;
       if (count === 0) continue;
       totalSlots += count;
-      const region = (w.region || "").trim() || "Sans région";
+      const raw = (w.region || "").trim() || "Sans région";
+      const key = normRegion(raw);
+      (regionLabels[key] ??= {});
+      regionLabels[key][raw] = (regionLabels[key][raw] || 0) + count;
       (groups[w.type] ??= {});
-      (groups[w.type][region] ??= []).push(w);
+      (groups[w.type][key] ??= []).push(w);
     }
+    const regionLabel = (key) => {
+      const variants = regionLabels[key] || {};
+      return Object.entries(variants).sort((a, b) => b[1] - a[1])[0]?.[0] || key;
+    };
 
     const orderedTypes = Object.keys(groups).sort(
       (a, b) => (COLOR_ORDER.indexOf(a) + 1 || 99) - (COLOR_ORDER.indexOf(b) + 1 || 99)
@@ -3324,7 +3378,7 @@ class MillesimeCard extends HTMLElement {
             const t = WINE_TYPES[tp] || WINE_TYPES.red;
             const regions = groups[tp];
             const tCount = Object.values(regions).reduce((s, arr) => s + arr.reduce((a, w) => a + slotCount(w), 0), 0);
-            const regionNames = Object.keys(regions).sort((a, b) => a.localeCompare(b));
+            const regionNames = Object.keys(regions).sort((a, b) => regionLabel(a).localeCompare(regionLabel(b)));
             return `
             <div class="vlist-color-head" style="--c:${t.color}">
               <span class="vlist-swatch" style="background:${t.color}"></span>
@@ -3335,7 +3389,7 @@ class MillesimeCard extends HTMLElement {
               const items = regions[rg].sort((a, b) => (a.w?.name || a.name || "").localeCompare(b.name || ""));
               const rCount = items.reduce((a, w) => a + slotCount(w), 0);
               return `
-              <div class="vlist-region-head">${esc(rg)}</div>
+              <div class="vlist-region-head">${esc(regionLabel(rg))}</div>
               ${items.map((w) => {
                 const n = slotCount(w);
                 const apo = (w.drink_from || w.drink_until)
@@ -3973,16 +4027,26 @@ class MillesimeCard extends HTMLElement {
     // Charger la liste des capteurs depuis le backend
     let sensors = { temperature: [], humidity: [], other: [] };
     try {
-      sensors = await this._hass.connection.sendMessagePromise({ type: "millesime/list_sensors" });
+      const resp = await this._hass.connection.sendMessagePromise({ type: "millesime/list_sensors" });
+      // v7.1.8 : le try/catch ne protégeait que l'ENVOI. Une réponse partielle
+      // ou inattendue écrasait la valeur par défaut, et le rendu plantait sur
+      // « length of undefined ». On normalise systématiquement les 3 listes.
+      sensors = {
+        temperature: Array.isArray(resp?.temperature) ? resp.temperature : [],
+        humidity:    Array.isArray(resp?.humidity)    ? resp.humidity    : [],
+        other:       Array.isArray(resp?.other)       ? resp.other       : [],
+      };
     } catch (err) {
       console.error("[Millésime] list_sensors:", err);
     }
 
     const opt = (s, sel) => `<option value="${s.entity_id}" ${s.entity_id === sel ? "selected" : ""}>${s.name}${s.unit ? ` (${s.state}${s.unit})` : ""}</option>`;
     const fill = (sel, primary, current) => {
+      if (!sel) return;
+      const list = Array.isArray(primary) ? primary : [];
       const groups = [];
       groups.push(`<option value="">— Aucun —</option>`);
-      if (primary.length) groups.push(`<optgroup label="Capteurs ${sel === tSel ? "température" : "humidité"}">${primary.map(s => opt(s, current)).join("")}</optgroup>`);
+      if (list.length) groups.push(`<optgroup label="Capteurs ${sel === tSel ? "température" : "humidité"}">${list.map(s => opt(s, current)).join("")}</optgroup>`);
       if (sensors.other.length) groups.push(`<optgroup label="Autres capteurs">${sensors.other.map(s => opt(s, current)).join("")}</optgroup>`);
       sel.innerHTML = groups.join("");
     };
@@ -4863,14 +4927,23 @@ class MillesimeCard extends HTMLElement {
   }
 
   // Explique POURQUOI la galerie risque de s'ouvrir à la place de l'appareil
-  // photo (appelé juste avant le repli sur l'input statique)
+  // photo (appelé juste avant le repli sur l'input statique).
+  // v7.1.8 : formulation revue — plusieurs utilisateurs ont pris ce message pour
+  // une panne de Millésime. Ce n'en est pas une : les navigateurs INTERDISENT
+  // l'accès à la caméra sur une connexion non sécurisée, aucune application ne
+  // peut le contourner. Le scan reste possible via la galerie.
   _cameraFallbackNotice(reason) {
     if (reason === "insecure") {
       this._showToast("info",
-        "Caméra directe indisponible en HTTP : si la galerie s'ouvre, accédez à Home Assistant en https (URL externe / Nabu Casa) puis réessayez.");
+        "Photo depuis la galerie : l'accès direct à l'appareil photo est réservé " +
+        "aux connexions sécurisées (https). Ce n'est pas un défaut de Millésime — " +
+        "prenez la photo avec votre appareil photo puis choisissez-la dans la galerie, " +
+        "ou accédez à Home Assistant en https (URL externe / Nabu Casa) pour la prise directe.");
     } else if (reason === "denied") {
       this._showToast("error",
-        "Accès caméra refusé — vérifiez les permissions de l'app Home Assistant (Réglages Android → Applications → Home Assistant → Autorisations → Appareil photo).");
+        "Accès caméra refusé — vérifiez les permissions de l'app Home Assistant " +
+        "(Réglages → Applications → Home Assistant → Autorisations → Appareil photo). " +
+        "En attendant, la photo depuis la galerie fonctionne.");
     }
   }
 
@@ -7000,6 +7073,36 @@ class MillesimeCard extends HTMLElement {
     const MARGIN_X = 1.03;
     const PAD_TOP = 0.45, PAD_BOT = 0.95;     // marges monde (bas = place du badge)
 
+    // v7.1.8 — HAUTEUR VISIBLE RÉELLE, calculée dans le repère de la CAMÉRA.
+    // La caméra regarde la scène avec ~16° d'élévation : sous cette inclinaison,
+    // une scène profonde occupe à l'écran PLUS de hauteur que sa hauteur monde
+    // (s3.y). Le cadrage se basait pourtant sur s3.y, d'où un contenu tronqué —
+    // le premier casier était rogné, et l'écart grandissait avec l'espacement
+    // des clayettes (d'où le contournement « régler l'espacement à 60 % »
+    // signalé par la communauté).
+    // On projette donc les 8 coins de la boîte englobante dans le repère caméra
+    // et on mesure l'amplitude verticale réelle. Sécurité anti-régression : on
+    // ne fait qu'ÉLARGIR le cadrage — une scène déjà entièrement visible reste
+    // affichée à l'identique.
+    const camOffset = new THREE.Vector3(4.2, 8.0, 28);
+    const _viewRot = new THREE.Matrix4().lookAt(
+      camOffset, new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 1, 0),
+    );
+    const _viewInv = new THREE.Matrix4().copy(_viewRot).invert();
+    let _camMinY = Infinity, _camMaxY = -Infinity;
+    for (const cx of [bbox.min.x, bbox.max.x]) {
+      for (const cyy of [bbox.min.y, bbox.max.y]) {
+        for (const cz of [bbox.min.z, bbox.max.z]) {
+          const p = new THREE.Vector3(cx - c3.x, cyy - c3.y, cz - c3.z).applyMatrix4(_viewInv);
+          if (p.y < _camMinY) _camMinY = p.y;
+          if (p.y > _camMaxY) _camMaxY = p.y;
+        }
+      }
+    }
+    // Hauteur retenue : la plus grande entre la mesure monde (comportement
+    // historique) et la mesure caméra (réalité de l'écran) → jamais plus petit
+    const viewH = Math.max(s3.y, (_camMaxY - _camMinY) || s3.y);
+
     // Lumière clé : viser le centre de la scène. En mode contact (défaut) il n'y a
     // pas de shadow map ; en mode PCF on cadre la shadow camera sur toute la scène.
     key.target.position.copy(c3);
@@ -7102,7 +7205,7 @@ class MillesimeCard extends HTMLElement {
       const effW = Math.min(w, MAX_W);
       const usable = Math.max(120, effW - RAIL_PX);
       const pxPerUnit = usable / (s3.x * MARGIN_X);
-      const h = Math.max(150, Math.round((s3.y + PAD_TOP + PAD_BOT) * pxPerUnit));
+      const h = Math.max(150, Math.round((viewH + PAD_TOP + PAD_BOT) * pxPerUnit));   // v7.1.8
       const hW = (s3.x * MARGIN_X) / 2;
       const extra = RAIL_PX / pxPerUnit;       // unités monde à droite (hors clayettes)
       // Marge de centrage quand la carte dépasse MAX_W (sinon 0)
