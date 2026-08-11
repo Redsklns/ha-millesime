@@ -15,9 +15,41 @@ from __future__ import annotations
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import DOMAIN
+
+# unique_id des capteurs GLOBAUX — à ne JAMAIS toucher lors du nettoyage
+_GLOBAL_UIDS = {f"{DOMAIN}_bottles", f"{DOMAIN}_value", f"{DOMAIN}_floors"}
+
+
+def _cleanup_stale_cellar_sensors(hass: HomeAssistant, entry: ConfigEntry, data: dict) -> None:
+    """Retire du registre les capteurs des caves qui n'existent plus (v7.1.8).
+
+    CAUSE RACINE des « entités orphelines » signalées par la communauté : les
+    capteurs par cave portent l'id de la cave dans leur unique_id
+    (millesime_<id>_bottles / _value). L'ajout était dynamique à la création
+    d'une cave, mais RIEN ne retirait jamais les capteurs d'une cave supprimée
+    ou recréée (nouvel id) — leurs entrées de registre survivaient, marquées
+    « n'est plus fournie par l'intégration ». Ce nettoyage rend le cycle de vie
+    symétrique : une cave disparue → ses capteurs disparaissent du registre.
+    Les capteurs globaux et toute entité d'un autre domaine ne sont pas touchés.
+    """
+    registry = er.async_get(hass)
+    live_ids = {c.get("id") for c in _cellars(data) if c.get("id")}
+    for entity in list(er.async_entries_for_config_entry(registry, entry.entry_id)):
+        uid = entity.unique_id or ""
+        if uid in _GLOBAL_UIDS or not uid.startswith(f"{DOMAIN}_"):
+            continue
+        # Motif par cave : millesime_<id>_bottles | millesime_<id>_value
+        core = uid[len(DOMAIN) + 1:]
+        for suffix in ("_bottles", "_value"):
+            if core.endswith(suffix):
+                cid = core[: -len(suffix)]
+                if cid and cid not in live_ids:
+                    registry.async_remove(entity.entity_id)
+                break
 
 
 def _cellars(data: dict) -> list[dict]:
@@ -73,8 +105,11 @@ async def async_setup_entry(
         entities.append(MillesimeCellarBottlesSensor(hass, entry, entry_data, cid))
         entities.append(MillesimeCellarValueSensor(hass, entry, entry_data, cid))
     async_add_entities(entities, True)
+    # v7.1.8 : purge des capteurs de caves disparues (cause des entités orphelines)
+    _cleanup_stale_cellar_sensors(hass, entry, entry_data["data"])
 
-    # Caves créées après le démarrage : ajout dynamique de leurs capteurs
+    # Caves créées après le démarrage : ajout dynamique de leurs capteurs —
+    # et symétriquement, purge du registre pour les caves supprimées (v7.1.8)
     @callback
     def _maybe_add_cellars(_event) -> None:
         data = hass.data[DOMAIN][entry.entry_id]["data"]
@@ -87,6 +122,7 @@ async def async_setup_entry(
                 new.append(MillesimeCellarValueSensor(hass, entry, entry_data, cid))
         if new:
             async_add_entities(new, True)
+        _cleanup_stale_cellar_sensors(hass, entry, data)
 
     entry.async_on_unload(
         hass.bus.async_listen(f"{DOMAIN}_updated", _maybe_add_cellars)
