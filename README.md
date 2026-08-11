@@ -128,6 +128,23 @@ L'intégralité de Millésime a été conçue et développée en collaboration a
 
 *Les 30 derniers jours — l'historique complet est disponible dans les [releases GitHub](https://github.com/Redsklns/ha-millesime/releases).*
 
+### [7.1.8] — 2026-08
+Fiabilisation complète des fonctions IA, d'après les retours de la communauté.
+
+- 🐛 **« parse_error » à la recherche de vin (7.1.7)** : Gemini répondait parfaitement, mais la réponse dépassait le budget de sortie et arrivait **coupée en plein milieu** — le JSON était alors rejeté en bloc. Cause : la recherche réclamait 6 vins × 16 champs, dont deux profils détaillés, dans un budget beaucoup trop juste
+- ✅ **Schéma allégé pour la recherche et le scan photo** : le profil aromatique et la structure ne sont plus demandés lors de l'identification. Vérification faite de bout en bout, **ils n'étaient de toute façon jamais enregistrés** par l'ajout d'un vin — générés puis jetés, ils consommaient inutilement quota, temps de réponse et budget. Ils restent demandés, en schéma complet, par « ♻️ Compléter les fiches », seul chemin qui les enregistre réellement
+- ✅ **Budgets de sortie relevés partout** (recherche, photo, accords, sommelier, estimation de prix) — ce plafond n'est pas facturé, seul le texte produit l'est
+- ✅ **Réponse coupée désormais récupérée** : les vins complets sont servis au lieu de tout perdre pour un dernier résultat tronqué
+- 🐛 **« service_unavailable » persistant sur le scan photo** : le réessai sans le réglage de raisonnement ne se déclenchait que sur une erreur 400, alors que Google répond parfois 500 sur un paramètre non supporté — l'appel échouait alors sur tous les modèles. Le réessai couvre maintenant les deux cas
+- ✅ **Diagnostic** : la cause d'arrêt de la réponse (`finishReason`) est désormais journalisée sur tous les chemins ; une réponse coupée n'est plus confondue avec un bug de format
+- 🍷 **Accords sur un menu complet** : le sommelier proposait un vin par service (jusqu'à 3 bouteilles) au lieu d'en minimiser le nombre, et renonçait parfois faute d'accord parfait. Il vise maintenant **une seule bouteille polyvalente, deux au maximum**, et propose toujours le meilleur choix disponible en signalant sa réserve
+
+- 🐛 **Entités « fantômes » dans Home Assistant** : les capteurs d'une cave supprimée restaient inscrits au registre (« cette entité n'est plus fournie par l'intégration »). Leur cycle de vie est désormais symétrique — une cave disparue voit ses capteurs retirés automatiquement, au démarrage et à chaque modification. Les capteurs globaux ne sont jamais touchés
+- 🐛 **Régions en double** (« Vallée de la Loire » et « Vallée De La Loire ») : la liste des bouteilles regroupe maintenant les graphies d'une même région en **une seule section**, en affichant la variante la plus fréquente. À l'ajout comme à l'édition, une région saisie s'aligne automatiquement sur la graphie déjà utilisée en cave — plus de nouveaux doublons, et aucune fiche existante modifiée
+- ✨ **Transfert de bouteilles entre caves** : le menu de déplacement liste désormais les casiers de **toutes** les caves, groupés par cave. L'emplacement d'une bouteille rangée ailleurs est préfixé du nom de sa cave
+- 🐛 **Contenu tronqué en vue 3D** : le cadrage vertical se calculait sur la hauteur de la scène en coordonnées monde, alors que la caméra la regarde inclinée — une scène profonde occupe à l'écran plus de hauteur que sa hauteur réelle, et le haut du casier était rogné. Le cadrage est maintenant calculé dans le repère de la caméra, et ne peut que s'élargir (aucun affichage correct n'est modifié)
+- 💬 **Message caméra clarifié** : l'accès direct à l'appareil photo est réservé aux connexions sécurisées (https) — une restriction des navigateurs, pas un défaut de Millésime. Le message l'explique et rappelle que le scan par la galerie fonctionne
+
 ### [7.1.7] — 2026-07
 Retrait d'une bouteille à l'unité.
 
