@@ -295,3 +295,140 @@ import_vinotag:
   fields:
     cellar_id:
       description: ID de la cave cible (optionnel, première cave par défaut)
+
+# ── Services ajoutés au fichier en v7.1.9 ────────────────────────────────────
+# Ils étaient enregistrés par l'intégration depuis plusieurs versions mais
+# absents de ce fichier : ils n'apparaissaient donc pas dans Outils de
+# développement → Actions. Purement documentaire, aucun changement de code.
+
+add_wine:
+  name: Ajouter un vin
+  description: Ajoute un vin à la cave, avec ses emplacements.
+  fields:
+    name:
+      description: Nom du vin
+      required: true
+      example: "Château Saint Ahon"
+    vintage:
+      description: Millésime
+      example: "2018"
+    type:
+      description: "Couleur : red, white, rose, sparkling ou dessert"
+      example: "red"
+    producer:
+      description: Producteur / domaine
+    appellation:
+      description: Appellation
+      example: "Haut-Médoc"
+    region:
+      description: Région viticole
+      example: "Bordeaux"
+    country:
+      description: Pays
+      example: "France"
+    grapes:
+      description: "Cépages de l'assemblage, séparés par des virgules (v7.1.9)"
+      example: "Merlot, Cabernet Sauvignon"
+    price:
+      description: Prix en euros
+      example: 18.5
+    tasting_notes:
+      description: Notes de dégustation
+    food_pairing:
+      description: Accords mets-vins
+    drink_from:
+      description: Début de la fenêtre d'apogée
+      example: "2024"
+    drink_until:
+      description: Fin de la fenêtre d'apogée
+      example: "2030"
+
+update_wine:
+  name: Modifier un vin
+  description: Modifie les informations d'un vin existant.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+    name:
+      description: Nouveau nom
+    vintage:
+      description: Millésime
+    grapes:
+      description: "Cépages, séparés par des virgules (v7.1.9)"
+    region:
+      description: Région viticole
+    country:
+      description: Pays
+    appellation:
+      description: Appellation
+    price:
+      description: Prix en euros
+
+remove_wine:
+  name: Retirer un vin
+  description: Retire un vin de la cave avec TOUTES ses bouteilles.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+
+add_slot:
+  name: Ajouter un emplacement
+  description: Ajoute une bouteille supplémentaire à un vin existant.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+    rack_id:
+      description: ID du casier
+    slot:
+      description: Numéro d'emplacement dans le casier
+
+update_slot:
+  name: Modifier un emplacement
+  description: Modifie le format ou le commentaire d'une bouteille.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+    slot_idx:
+      description: Index de la bouteille dans la liste des emplacements
+      required: true
+    size:
+      description: Format de la bouteille
+    comment:
+      description: Commentaire libre
+
+remove_slot:
+  name: Retirer une bouteille
+  description: >-
+    Retire UNE bouteille sans la marquer comme bue (aucune entrée au journal
+    de dégustation). Le vin est supprimé automatiquement s'il s'agissait de sa
+    dernière bouteille.
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+    slot_idx:
+      description: Index de la bouteille à retirer
+      required: true
+
+move_slot:
+  name: Déplacer une bouteille
+  description: >-
+    Déplace une bouteille vers un autre emplacement, y compris dans une autre
+    cave (depuis la v7.1.8).
+  fields:
+    wine_id:
+      description: ID du vin
+      required: true
+    slot_idx:
+      description: Index de la bouteille à déplacer
+      required: true
+    rack_id:
+      description: ID du casier de destination
+      required: true
+    slot:
+      description: Numéro d'emplacement de destination
+      required: true
