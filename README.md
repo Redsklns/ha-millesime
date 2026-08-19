@@ -2,6 +2,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=flat-square)](https://github.com/hacs/integration)
 [![version](https://img.shields.io/github/v/release/Redsklns/ha-millesime?style=flat-square&color=7B1D2E&label=version&sort=semver)](https://github.com/Redsklns/ha-millesime/releases)
+[![étoiles](https://img.shields.io/github/stars/Redsklns/ha-millesime?style=flat-square&color=7B1D2E&label=étoiles)](https://github.com/Redsklns/ha-millesime/stargazers)
 [![Offrir un verre de vin](https://img.shields.io/badge/🍷_Offrir_un_verre_de_vin-PayPal-7B1D2E.svg?style=flat-square)](https://paypal.me/Redsklns)
 
 **Millésime** transforme Home Assistant en gestionnaire de cave à vin complet : visualisez vos bouteilles dans une scène **3D réaliste**, scannez les étiquettes par **photo**, suivez la valeur de votre collection et tenez un **journal de dégustation**.
@@ -127,6 +128,18 @@ L'intégralité de Millésime a été conçue et développée en collaboration a
 ## 📝 Changelog
 
 *Les 30 derniers jours — l'historique complet est disponible dans les [releases GitHub](https://github.com/Redsklns/ha-millesime/releases).*
+
+### [7.1.9] — 2026-08
+Saisie complète, référentiel viticole mondial et vérification des propositions de l'IA.
+
+- 🐛 **Champs Région, Pays, Notes de dégustation et Accords enfin saisissables** : ils existaient mais étaient *invisibles*, réservés au remplissage automatique. Quand le scan échouait ou que la clé IA n'était pas configurée, ces informations devenaient impossibles à renseigner
+- ✨ **Référentiel viticole mondial** : 16 pays, 140 régions et 1158 appellations en autocomplétion, en cascade — le pays filtre les régions, la région filtre les appellations. Choisir une appellation renseigne automatiquement sa région et son pays. La saisie reste toujours libre
+- ✨ **Nouveau champ Cépages** : plusieurs cépages par vin (assemblages), avec une liste de référence de 277 cépages du monde
+- ✨ **Producteur autocomplété** depuis les vins déjà présents dans votre cave
+- ✨ **Recherche enrichie par vos saisies** : appellation, producteur, millésime et région sont transmis à l'IA pour qu'elle identifie le bon vin. Nouveau bouton « Identifier avec mes infos » quand il n'y a rien à taper
+- ✨ **Vérification des propositions** : l'IA n'écrase plus silencieusement vos saisies. En cas d'écart significatif — millésime différent, appellation incompatible, ou prix s'écartant de plus de 30 % — un écran présente les deux versions et vous tranchez, champ par champ. Vos saisies sont pré-sélectionnées par défaut
+- 🐛 **Déplacement des bouteilles impossible en vue 3D** : les emplacements vides des couches supérieures, masqués depuis la v7.1.2 mais rendus temporairement détectables pour rester tappables, pouvaient se trouver devant une bouteille et lui voler le clic — le glisser-déposer ne démarrait alors jamais. Le ciblage donne désormais la priorité à ce qui est réellement visible
+- 🧹 **Référentiel unifié** : deux listes de référence coexistaient avec des classements divergents. Elles sont fusionnées sans perte en une source unique
 
 ### [7.1.8] — 2026-08
 Fiabilisation complète des fonctions IA, d'après les retours de la communauté.
