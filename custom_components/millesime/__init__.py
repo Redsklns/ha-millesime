@@ -1,4 +1,4 @@
-"""Millésime v7.1.8 — Cave à Vin pour Home Assistant.
+"""Millésime v7.1.9 — Cave à Vin pour Home Assistant.
 
 Modèles Gemini  : découverts dynamiquement au démarrage (GET /models sur la clé
                   de l'utilisateur), avec repli sur les modèles stables 2.5 flash.
@@ -36,7 +36,7 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN    = "millesime"
 PLATFORMS = ["sensor"]
 DATA_FILE = "millesime_data.json"
-VERSION   = "7.1.8"
+VERSION   = "7.1.9"
 
 OFF_UA       = f"Millesime-HA/{VERSION} (github.com/Redsklns/ha-millesime)"
 # Deux modèles séparés = deux pools de quota indépendants (free tier)
@@ -453,6 +453,7 @@ Retourne UNIQUEMENT un tableau JSON valide [], sans markdown ni backticks.
 Chaque objet doit avoir exactement ces champs (string, jamais null) :
   name, vintage, type, shape, appellation, region, country, producer,
   tasting_notes, food_pairing, drink_from, drink_until, vivino_rating, price,
+  grapes,
   aroma_profile, structure_profile
 Règles :
 - type : "red" | "white" | "rose" | "sparkling" | "dessert" uniquement
@@ -497,7 +498,8 @@ Tu es un expert mondial en vins et sommelière.
 Retourne UNIQUEMENT un tableau JSON valide [], sans markdown ni backticks.
 Chaque objet doit avoir exactement ces champs (string, jamais null) :
   name, vintage, type, shape, appellation, region, country, producer,
-  tasting_notes, food_pairing, drink_from, drink_until, vivino_rating, price
+  tasting_notes, food_pairing, drink_from, drink_until, vivino_rating, price,
+  grapes
 Règles :
 - type : "red" | "white" | "rose" | "sparkling" | "dessert" uniquement
 - shape : forme de la bouteille, "bordeaux" | "bourgogne" | "champagne" | "flute" | "rose" | "loire" | "" (vide si incertain). Bordeaux=épaules marquées ; bourgogne=épaules tombantes ; champagne=épaisse à base large ; flute=fine et haute (Alsace) ; rose=type Provence ; loire=ligérienne
@@ -508,6 +510,8 @@ Règles :
   blancs vifs). JAMAIS plus de 12 ans d'écart.
 - vivino_rating : décimal 0.0–5.0 (0 si inconnu)
 - price : prix moyen constaté en euros, UNIQUEMENT le nombre décimal (ex: 18.5). 0.0 si inconnu.
+- grapes : cépages de l'assemblage, séparés par des virgules (ex: "Merlot, Cabernet Sauvignon").
+  Chaîne vide si inconnu. Nom du cépage seul, sans pourcentage.
 - tasting_notes : 1 phrase courte en français
 - food_pairing : 2 accords en français séparés par une virgule
 - Couvrir différents millésimes si possible
@@ -695,6 +699,7 @@ def _parse_gemini_response(raw: str, source: str, finish: str = "") -> tuple[lis
             "food_pairing":  str(w.get("food_pairing", "") or ""),
             "drink_from":    str(w.get("drink_from", "") or ""),
             "drink_until":   str(w.get("drink_until", "") or ""),
+            "grapes":        str(w.get("grapes", "") or ""),      # v7.1.9
             "aroma_profile": str(w.get("aroma_profile", "") or ""),
             "structure_profile": str(w.get("structure_profile", "") or ""),
             "vivino_rating": round(_safe_float(w.get("vivino_rating")), 1),
@@ -838,7 +843,8 @@ async def _gemini_call(
 # ── Recherche Gemini par texte ────────────────────────────────────────────────
 
 async def _gemini_search_text(
-    hass: HomeAssistant, query: str, api_key: str, full: bool = False
+    hass: HomeAssistant, query: str, api_key: str, full: bool = False,
+    context: dict | None = None,
 ) -> tuple[list[dict], str | None]:
     """Recherche Gemini via texte.
 
@@ -853,10 +859,23 @@ async def _gemini_search_text(
     Retourne (résultats, code_erreur_ou_None).
     """
     nb = 3 if full else 5
+    # v7.1.9 : CONTEXTE UTILISATEUR. Les champs déjà saisis (appellation,
+    # producteur, millésime, région…) sont transmis à l'IA pour qu'elle
+    # identifie LE bon vin au lieu de deviner à partir du seul texte libre.
+    # Coût mesuré : moins de 100 tokens, négligeable face au budget de réponse.
+    ctx_lines = []
+    for label, key in (("Producteur", "producer"), ("Millésime", "vintage"),
+                       ("Appellation", "appellation"), ("Région", "region"),
+                       ("Pays", "country"), ("Couleur", "type"), ("Cépages", "grapes")):
+        val = str((context or {}).get(key, "") or "").strip()
+        if val:
+            ctx_lines.append(f"- {label} : {val[:80]}")
+    ctx_txt = ("\nInformations déjà connues, à respecter pour identifier le bon vin :\n"
+               + "\n".join(ctx_lines[:8])) if ctx_lines else ""
     body_base = {
         "system_instruction": {"parts": [{"text": _GEMINI_SYSTEM if full else _GEMINI_SYSTEM_LIGHT}]},
         "contents": [{"parts": [{"text": (
-            f'Recherche de vin : "{query}"\n'
+            f'Recherche de vin : "{query}"{ctx_txt}\n'
             f"Retourne jusqu'à {nb} vins correspondants."
         )}]}],
     }
@@ -1369,7 +1388,8 @@ def _canonical_region(d: dict, region: str) -> str:
 
 
 async def _search_wines(
-    hass: HomeAssistant, query: str, gemini_key: str = "", full: bool = False
+    hass: HomeAssistant, query: str, gemini_key: str = "", full: bool = False,
+    context: dict | None = None,
 ) -> dict:
     """Orchestrer la recherche texte.
 
@@ -1380,7 +1400,11 @@ async def _search_wines(
 
     Retourne {"results": [...], "error": null|code, "source": "gemini"|"off"}.
     """
-    cache_key = _normalize(query) + ("_g" if gemini_key else "_o") + ("_f" if full else "")
+    # v7.1.9 : le contexte fait partie de la clé — deux recherches identiques
+    # avec des contextes différents ne doivent pas se répondre l'une l'autre
+    ctx_sig = "|".join(f"{k}={str(v)[:40]}" for k, v in sorted((context or {}).items()) if v)
+    cache_key = (_normalize(query) + ("_g" if gemini_key else "_o")
+                 + ("_f" if full else "") + ("_" + _normalize(ctx_sig) if ctx_sig else ""))
     if cache_key in _SEARCH_CACHE:
         ts, cached = _SEARCH_CACHE[cache_key]
         if time.time() - ts < _CACHE_TTL:
@@ -1388,7 +1412,7 @@ async def _search_wines(
             return cached
 
     if gemini_key:
-        results, err = await _gemini_search_text(hass, query, gemini_key, full=full)
+        results, err = await _gemini_search_text(hass, query, gemini_key, full=full, context=context)
         if err == ERR_QUOTA_EXCEEDED:
             # Quota dépassé → fallback OFF + signaler l'erreur
             _LOGGER.warning("Quota Gemini dépassé, fallback OFF")
@@ -1662,11 +1686,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     @websocket_api.websocket_command({
         vol.Required("type"):  "millesime/search_wine",
         vol.Required("query"): str,
+        # v7.1.9 : contexte facultatif (champs déjà saisis par l'utilisateur).
+        # Facultatif → les clients antérieurs continuent de fonctionner.
+        vol.Optional("context"): dict,
     })
     @websocket_api.async_response
     async def ws_search_wine(hass: HomeAssistant, connection, msg: dict) -> None:
         gkey = hass.data[DOMAIN][entry.entry_id]["gemini_key"]
-        response = await _search_wines(hass, msg["query"], gkey)
+        ctx = msg.get("context") or {}
+        # Garde-fou : on ne transmet que des chaînes courtes et connues, pour
+        # éviter qu'un client malformé n'allonge démesurément la requête.
+        safe = {k: str(v)[:80] for k, v in ctx.items()
+                if k in ("producer", "vintage", "appellation", "region",
+                         "country", "type", "grapes") and v}
+        response = await _search_wines(hass, msg["query"], gkey, context=safe)
         connection.send_result(msg["id"], response)
 
     websocket_api.async_register_command(hass, ws_search_wine)
@@ -1995,6 +2028,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "shape":        call.data.get("shape", ""),
             "appellation":  call.data.get("appellation", ""),
             "region":       _canonical_region(d, call.data.get("region", "")),   # v7.1.8 : anti-doublon de graphie
+            "grapes":       call.data.get("grapes", ""),      # v7.1.9
             "producer":     call.data.get("producer", ""),
             "country":      call.data.get("country", ""),
             "price":        float(call.data.get("price", 0)),
@@ -2023,6 +2057,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "country", "price", "drink_from", "drink_until", "notes",
             "tasting_notes", "food_pairing", "event", "vivino_rating",
             "image_url", "vivino_url", "size", "favorite", "shape", "gifted_by",
+            "grapes",   # v7.1.9 : cépages (liste séparée par virgules)
         ]
         for w in d["wines"]:
             if w["id"] == call.data["wine_id"]:
