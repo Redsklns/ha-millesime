@@ -1,5 +1,5 @@
 /**
- * Millésime Card v7.1.8
+ * Millésime Card v7.1.9
  * Cave à vin pour Home Assistant
  * - Recherche texte avec suggestions temps réel
  * - Lecture d'étiquette par photo (Gemini Vision)
@@ -7,7 +7,7 @@
  * - Journal de dégustation, recherche dans la cave, déplacement de casier
  */
 
-const MILLESIME_CARD_VERSION = "7.1.8";
+const MILLESIME_CARD_VERSION = "7.1.9";
 
 // ── Budget quotidien Gemini (free tier) ─────────────────────────────────────
 // Estimation codée en dur : ~250 requêtes/jour (Gemini 2.5 Flash, quotas
@@ -1047,6 +1047,61 @@ const GLASS_SVG = `<svg viewBox="0 0 40 56" xmlns="http://www.w3.org/2000/svg">
 
 // Icône tire-bouchon colorée (manche bois + spirale métal) pour le bouton « À ouvrir »
 
+// ── Référentiel viticole mondial (v7.1.9) ────────────────────────────────────
+// POURQUOI : les champs Région et Pays étaient invisibles (type="hidden") et
+// remplis uniquement par l'IA. Quand le scan échouait, l'utilisateur ne pouvait
+// RIEN saisir — c'est le blocage remonté par la communauté. Ces champs sont
+// désormais visibles, et ce référentiel normalise la saisie : une orthographe
+// unique par région évite les doublons et donne à Gemini un contexte fiable.
+// Hiérarchie PAYS → RÉGION → APPELLATION : chaque liste est filtrée par le
+// niveau supérieur, donc l'utilisateur voit 15 à 40 propositions pertinentes
+// au lieu de 765. La saisie libre reste toujours possible.
+// ── Référentiel viticole mondial (v7.1.9) ────────────────────────────────────
+// Pays → régions → appellations. Sert à NORMALISER la saisie : une orthographe
+// stable aide Gemini à identifier le bon vin et évite les doublons de région
+// signalés par la communauté. La saisie reste TOUJOURS libre (datalist, jamais
+// select) : une appellation absente peut être tapée telle quelle.
+// 16 pays · 140 régions · 1158 appellations · 277 cépages
+// SOURCE UNIQUE : ne jamais réintroduire de seconde liste en parallèle, sous
+// peine de divergences (une même région classée différemment selon la liste).
+const WINE_WORLD = {"France":{"Bordeaux":["Bordeaux","Bordeaux Supérieur","Médoc","Haut-Médoc","Pauillac","Margaux","Saint-Julien","Saint-Estèphe","Listrac-Médoc","Moulis-en-Médoc","Pessac-Léognan","Graves","Graves Supérieures","Saint-Émilion","Saint-Émilion Grand Cru","Pomerol","Lalande-de-Pomerol","Fronsac","Canon-Fronsac","Castillon Côtes de Bordeaux","Francs Côtes de Bordeaux","Blaye Côtes de Bordeaux","Côtes de Bourg","Cadillac Côtes de Bordeaux","Entre-Deux-Mers","Sauternes","Barsac","Loupiac","Sainte-Croix-du-Mont","Cérons","Cadillac","Crémant de Bordeaux","Montagne-Saint-Émilion","Lussac-Saint-Émilion","Puisseguin-Saint-Émilion","Saint-Georges-Saint-Émilion","Sainte-Foy Côtes de Bordeaux","Bordeaux Clairet","Bordeaux Rosé","Graves de Vayres","Premières Côtes de Bordeaux","Sainte-Foy-Bordeaux"],"Bourgogne":["Bourgogne","Bourgogne Aligoté","Bourgogne Passe-Tout-Grains","Coteaux Bourguignons","Chablis","Petit Chablis","Chablis Premier Cru","Chablis Grand Cru","Irancy","Saint-Bris","Marsannay","Fixin","Gevrey-Chambertin","Chambertin","Chambertin-Clos de Bèze","Morey-Saint-Denis","Clos de la Roche","Clos de Tart","Chambolle-Musigny","Musigny","Bonnes-Mares","Vougeot","Clos de Vougeot","Vosne-Romanée","Romanée-Conti","La Tâche","Richebourg","Échézeaux","Grands Échézeaux","Nuits-Saint-Georges","Ladoix","Aloxe-Corton","Corton","Corton-Charlemagne","Pernand-Vergelesses","Savigny-lès-Beaune","Chorey-lès-Beaune","Beaune","Pommard","Volnay","Monthélie","Auxey-Duresses","Saint-Romain","Meursault","Puligny-Montrachet","Chassagne-Montrachet","Montrachet","Bâtard-Montrachet","Saint-Aubin","Santenay","Maranges","Rully","Mercurey","Givry","Montagny","Bouzeron","Mâcon","Mâcon-Villages","Pouilly-Fuissé","Pouilly-Loché","Pouilly-Vinzelles","Saint-Véran","Viré-Clessé","Crémant de Bourgogne","Bourgogne Côte d'Or","Bourgogne Hautes Côtes de Beaune","Bourgogne Hautes Côtes de Nuits","Bourgogne Chitry","Bourgogne Épineuil","Bourgogne Tonnerre","Bourgogne Côte Chalonnaise","Latricières-Chambertin","Mazis-Chambertin","Charmes-Chambertin","Griotte-Chambertin","Ruchottes-Chambertin","Chapelle-Chambertin","Mazoyères-Chambertin","Clos Saint-Denis","Clos des Lambrays","Romanée-Saint-Vivant","La Grande Rue","Chevalier-Montrachet","Bienvenues-Bâtard-Montrachet","Criots-Bâtard-Montrachet","Charlemagne","Blagny","Pernand-Vergelesses Île des Vergelesses"],"Beaujolais":["Beaujolais","Beaujolais-Villages","Brouilly","Côte de Brouilly","Chénas","Chiroubles","Fleurie","Juliénas","Morgon","Moulin-à-Vent","Régnié","Saint-Amour"],"Vallée du Rhône":["Côtes du Rhône","Côtes du Rhône Villages","Côte-Rôtie","Condrieu","Château-Grillet","Saint-Joseph","Crozes-Hermitage","Hermitage","Cornas","Saint-Péray","Châteauneuf-du-Pape","Gigondas","Vacqueyras","Vinsobres","Beaumes-de-Venise","Rasteau","Cairanne","Lirac","Tavel","Costières de Nîmes","Ventoux","Luberon","Grignan-les-Adhémar","Clairette de Die","Crémant de Die","Saint-Maurice","Muscat de Beaumes-de-Venise","Duché d'Uzès","Côtes du Vivarais","Laudun","Plan de Dieu","Signargues","Sablet","Séguret","Valréas","Visan","Chusclan","Massif d'Uchaux","Roaix"],"Provence":["Côtes de Provence","Côtes de Provence Sainte-Victoire","Côtes de Provence Fréjus","Côtes de Provence La Londe","Coteaux d'Aix-en-Provence","Coteaux Varois en Provence","Les Baux-de-Provence","Bandol","Cassis","Bellet","Palette","Pierrevert","Côtes de Provence Notre-Dame des Anges","Côtes de Provence Pierrefeu"],"Languedoc":["Languedoc","Corbières","Corbières-Boutenac","Minervois","Minervois La Livinière","Fitou","Faugères","Saint-Chinian","Picpoul de Pinet","Pic Saint-Loup","La Clape","Terrasses du Larzac","Limoux","Blanquette de Limoux","Crémant de Limoux","Cabardès","Malepère","Clairette du Languedoc","Muscat de Frontignan","Muscat de Lunel","Maury","Banyuls","Collioure","Côtes du Roussillon","Côtes du Roussillon Villages","Rivesaltes","Muscat de Rivesaltes","Grès de Montpellier","Pézenas","Sommières","Quatourze","Saint-Georges-d'Orques","Cabrières","Montpeyroux","Saint-Saturnin","Saint-Drézéry","Vérargues","Saint-Christol","Maury Sec","Côtes du Roussillon Les Aspres","Muscat de Mireval","Muscat de Saint-Jean-de-Minervois"],"Vallée de la Loire":["Muscadet","Muscadet Sèvre et Maine","Muscadet Côtes de Grandlieu","Gros Plant du Pays Nantais","Anjou","Anjou-Villages","Savennières","Coteaux du Layon","Chaume","Quarts de Chaume","Bonnezeaux","Saumur","Saumur-Champigny","Crémant de Loire","Coteaux de Saumur","Touraine","Vouvray","Montlouis-sur-Loire","Chinon","Bourgueil","Saint-Nicolas-de-Bourgueil","Cheverny","Cour-Cheverny","Valençay","Sancerre","Pouilly-Fumé","Pouilly-sur-Loire","Menetou-Salon","Quincy","Reuilly","Coteaux du Giennois","Rosé d'Anjou","Cabernet d'Anjou","Rosé de Loire","Jasnières","Coteaux du Vendômois","Saint-Pourçain","Coteaux de l'Aubance","Anjou Coteaux de la Loire","Savennières Roche aux Moines","Savennières Coulée de Serrant","Saumur Puy-Notre-Dame","Haut-Poitou","Châteaumeillant","Orléans","Orléans-Cléry","Coteaux du Loir","Fiefs Vendéens","Touraine-Amboise","Touraine-Mesland","Touraine-Azay-le-Rideau","Touraine-Chenonceaux","Touraine-Oisly","Touraine Noble Joué","Côte Roannaise","Côtes du Forez"],"Alsace":["Alsace","Alsace Grand Cru","Crémant d'Alsace","Alsace Riesling","Alsace Gewurztraminer","Alsace Pinot Gris","Alsace Pinot Noir","Alsace Muscat","Alsace Sylvaner","Alsace Pinot Blanc","Alsace Edelzwicker"],"Champagne":["Champagne","Coteaux Champenois","Rosé des Riceys","Champagne Grand Cru","Champagne Premier Cru","Champagne Blanc de Blancs","Champagne Blanc de Noirs","Champagne Rosé"],"Sud-Ouest":["Cahors","Madiran","Pacherenc du Vic-Bilh","Jurançon","Jurançon Sec","Irouléguy","Gaillac","Fronton","Bergerac","Côtes de Bergerac","Monbazillac","Pécharmant","Saussignac","Montravel","Buzet","Marcillac","Côtes de Duras","Côtes du Marmandais","Saint-Mont","Tursan","Béarn","Brulhois","Estaing","Entraygues-Le Fel","Coteaux du Quercy","Côtes de Millau","Rosette","Côtes de Montravel","Haut-Montravel","Floc de Gascogne","Béarn-Bellocq","Vins de Lavilledieu"],"Jura":["Côtes du Jura","Arbois","Château-Chalon","L'Étoile","Crémant du Jura","Macvin du Jura"],"Savoie":["Vin de Savoie","Roussette de Savoie","Seyssel","Crémant de Savoie","Bugey","Roussette du Bugey"],"Corse":["Vin de Corse","Patrimonio","Ajaccio","Vin de Corse Figari","Vin de Corse Porto-Vecchio","Vin de Corse Calvi","Vin de Corse Sartène","Muscat du Cap Corse"],"Lorraine":["Côtes de Toul","Moselle"],"Roussillon":["Banyuls","Banyuls Grand Cru","Collioure","Côtes du Roussillon","Côtes du Roussillon Villages","Maury","Muscat de Rivesaltes","Rivesaltes"]},"Italie":{"Toscane":["Chianti","Chianti Classico","Brunello di Montalcino","Rosso di Montalcino","Vino Nobile di Montepulciano","Rosso di Montepulciano","Bolgheri","Bolgheri Sassicaia","Carmignano","Vernaccia di San Gimignano","Morellino di Scansano","Maremma Toscana","Toscana IGT","Vin Santo del Chianti Classico","Chianti Rufina","Chianti Colli Senesi","Chianti Colli Fiorentini","Montecucco","Suvereto","Val di Cornia","Cortona","Terre di Pisa","Colli dell'Etruria Centrale","Elba Aleatico Passito"],"Piémont":["Barolo","Barbaresco","Barbera d'Alba","Barbera d'Asti","Dolcetto d'Alba","Langhe","Roero","Nebbiolo d'Alba","Gavi","Moscato d'Asti","Asti","Brachetto d'Acqui","Alta Langa","Grignolino d'Asti","Ruché di Castagnole Monferrato","Barbera del Monferrato","Dogliani","Diano d'Alba","Verduno Pelaverga","Colli Tortonesi","Cortese dell'Alto Monferrato","Nizza","Terre Alfieri","Gattinara","Ghemme","Boca","Bramaterra","Lessona","Carema","Dolcetto di Dogliani","Monferrato","Ruchè di Castagnole Monferrato"],"Vénétie":["Amarone della Valpolicella","Valpolicella","Valpolicella Ripasso","Recioto della Valpolicella","Soave","Soave Classico","Bardolino","Prosecco","Conegliano Valdobbiadene Prosecco","Asolo Prosecco","Lugana","Bianco di Custoza","Lessini Durello","Amarone della Valpolicella Classico","Valpolicella Classico","Soave Superiore","Gambellara","Breganze","Colli Euganei","Bagnoli","Piave","Arcole","Prosecco di Conegliano-Valdobbiadene","Recioto di Soave"],"Frioul-Vénétie Julienne":["Collio","Colli Orientali del Friuli","Friuli Grave","Friuli Isonzo","Ramandolo","Carso"],"Trentin-Haut-Adige":["Alto Adige","Trentino","Teroldego Rotaliano","Lago di Caldaro","Trento DOC"],"Lombardie":["Franciacorta","Oltrepò Pavese","Valtellina Superiore","Sforzato di Valtellina","Lugana"],"Émilie-Romagne":["Lambrusco di Sorbara","Lambrusco Grasparossa di Castelvetro","Sangiovese di Romagna","Albana di Romagna","Colli Bolognesi"],"Ombrie":["Orvieto","Sagrantino di Montefalco","Montefalco Rosso","Torgiano","Montefalco Sagrantino","Colli del Trasimeno","Colli Perugini","Assisi"],"Marches":["Verdicchio dei Castelli di Jesi","Verdicchio di Matelica","Rosso Conero","Rosso Piceno","Offida"],"Abruzzes":["Montepulciano d'Abruzzo","Trebbiano d'Abruzzo","Cerasuolo d'Abruzzo"],"Latium":["Frascati","Est! Est!! Est!!! di Montefiascone","Cesanese del Piglio"],"Campanie":["Taurasi","Fiano di Avellino","Greco di Tufo","Falanghina del Sannio","Aglianico del Taburno","Lacryma Christi del Vesuvio","Vesuvio","Costa d'Amalfi","Cilento","Irpinia","Sannio"],"Pouilles":["Primitivo di Manduria","Salice Salentino","Castel del Monte","Negroamaro","Locorotondo","Gioia del Colle","Primitivo di Manduria Dolce Naturale","Copertino","Brindisi","Squinzano","Nardò","Leverano","Manduria"],"Sicile":["Etna","Nero d'Avola","Cerasuolo di Vittoria","Marsala","Passito di Pantelleria","Sicilia DOC","Faro","Etna Rosso","Etna Bianco","Etna Rosato","Vittoria","Noto","Menfi","Contea di Sclafani","Alcamo","Erice"],"Sardaigne":["Vermentino di Gallura","Cannonau di Sardegna","Carignano del Sulcis","Vermentino di Sardegna","Turriga"],"Basilicate":["Aglianico del Vulture"],"Ligurie":["Cinque Terre","Rossese di Dolceacqua"],"Calabre":["Cirò"],"Frioul":["Carso","Colli Orientali del Friuli","Collio","Friuli Grave","Friuli Isonzo"]},"Espagne":{"Rioja":["Rioja","Rioja Alta","Rioja Alavesa","Rioja Oriental"],"Castille-et-León":["Ribera del Duero","Rueda","Toro","Bierzo","Cigales","Arribes","Tierra de León","Sierra de Salamanca","Valles de Benavente","Valtiendas"],"Catalogne":["Priorat","Montsant","Penedès","Cava","Terra Alta","Costers del Segre","Empordà","Conca de Barberà","Alella","Pla de Bages","Tarragona","Cava de Paraje Calificado","Corpinnat","Clàssic Penedès"],"Galice":["Rías Baixas","Ribeiro","Ribeira Sacra","Valdeorras","Monterrei"],"Andalousie":["Jerez-Xérès-Sherry","Manzanilla-Sanlúcar de Barrameda","Montilla-Moriles","Málaga","Sierras de Málaga","Condado de Huelva","Jerez Fino","Jerez Amontillado","Jerez Oloroso","Jerez Palo Cortado","Jerez Pedro Ximénez","Jerez Cream"],"Aragon":["Cariñena","Campo de Borja","Calatayud","Somontano"],"Navarre":["Navarra"],"Castille-La Manche":["La Mancha","Valdepeñas","Méntrida","Manchuela","Almansa"],"Communauté valencienne":["Valencia","Utiel-Requena","Alicante","Clariano","Terrazas de Contiendas"],"Murcie":["Jumilla","Yecla","Bullas"],"Canaries":["Lanzarote","Tacoronte-Acentejo","Ycoden-Daute-Isora"],"Baléares":["Binissalem","Pla i Llevant"],"Pays basque":["Txakoli de Getaria","Txakoli de Bizkaia","Txakoli de Álava"],"Madrid":["Vinos de Madrid","Arganda","Navalcarnero","San Martín de Valdeiglesias"],"Estrémadure":["Ribera del Guadiana"],"Levant":["Alicante","Bullas","Jumilla","Utiel-Requena","Valencia","Yecla"],"Îles Canaries":["Lanzarote","Tacoronte-Acentejo","Ycoden-Daute-Isora"],"Îles Baléares":["Binissalem","Pla i Llevant"]},"Portugal":{"Douro":["Douro","Porto","Porto Vintage","Porto Tawny","Porto LBV"],"Alentejo":["Alentejo","Alentejano","Borba","Reguengos","Vidigueira","Redondo"],"Vinho Verde":["Vinho Verde","Monção e Melgaço","Alvarinho de Monção e Melgaço"],"Dão":["Dão"],"Bairrada":["Bairrada"],"Lisbonne":["Bucelas","Colares","Óbidos","Alenquer","Carcavelos","Lisboa"],"Setúbal":["Setúbal","Palmela","Moscatel de Setúbal"],"Madère":["Madeira","Madeira Sercial","Madeira Verdelho","Madeira Bual","Madeira Malmsey"],"Açores":["Pico","Biscoitos","Graciosa"],"Tejo":["Tejo"],"Algarve":["Lagoa","Portimão","Tavira"],"Beiras":["Beira Interior","Távora-Varosa","Lafões"],"Península de Setúbal":["Península de Setúbal"],"Trás-os-Montes":["Trás-os-Montes","Chaves","Valpaços","Planalto Mirandês"]},"Allemagne":{"Mosel":["Mosel","Bernkasteler Doctor","Wehlener Sonnenuhr","Piesporter Goldtröpfchen","Ürziger Würzgarten","Erdener Treppchen","Graacher Himmelreich","Zeltinger Sonnenuhr","Brauneberger Juffer","Scharzhofberger","Saar","Ruwer"],"Rheingau":["Rheingau","Johannisberg","Rüdesheim","Hochheim","Erbach","Marcobrunn","Steinberg","Assmannshausen","Kiedrich","Oestrich"],"Rheinhessen":["Rheinhessen","Nierstein","Oppenheim","Nackenheim"],"Pfalz":["Pfalz","Forst","Deidesheim","Ruppertsberg","Wachenheim","Kallstadt","Bad Dürkheim","Gimmeldingen","Königsbach"],"Nahe":["Nahe","Schlossböckelheim","Niederhausen"],"Baden":["Baden","Kaiserstuhl","Ortenau","Tuniberg"],"Württemberg":["Württemberg","Bottwartal","Remstal"],"Franken":["Franken","Würzburger Stein","Escherndorfer Lump"],"Ahr":["Ahr","Walporzheim"],"Saale-Unstrut":["Saale-Unstrut"],"Sachsen":["Sachsen"]},"Autriche":{"Basse-Autriche":["Wachau","Kremstal","Kamptal","Traisental","Wagram","Weinviertel","Carnuntum","Thermenregion"],"Burgenland":["Neusiedlersee","Leithaberg","Mittelburgenland","Eisenberg","Ruster Ausbruch","Rust"],"Styrie":["Südsteiermark","Vulkanland Steiermark","Weststeiermark"],"Vienne":["Wiener Gemischter Satz"]},"États-Unis":{"Californie":["Napa Valley","Oakville","Rutherford","Stags Leap District","Howell Mountain","Spring Mountain District","Mount Veeder","Diamond Mountain District","Calistoga","Yountville","Los Carneros","Sonoma Valley","Russian River Valley","Alexander Valley","Dry Creek Valley","Knights Valley","Chalk Hill","Sonoma Coast","Anderson Valley","Paso Robles","Santa Barbara County","Santa Rita Hills","Santa Maria Valley","Santa Lucia Highlands","Monterey","Lodi","Sierra Foothills","Livermore Valley","Mendocino","Carneros","Green Valley of Russian River Valley","Bennett Valley","Fort Ross-Seaview","Petaluma Gap","Ballard Canyon","Happy Canyon of Santa Barbara","Edna Valley","Arroyo Grande Valley","Arroyo Seco","Chalone","Mount Harlan","Temecula Valley","Amador County","El Dorado","Clarksburg","Suisun Valley","Coombsville","Atlas Peak","Chiles Valley","St. Helena","Wild Horse Valley","Oak Knoll District","Lake County","Santa Ynez Valley"],"Oregon":["Willamette Valley","Dundee Hills","Ribbon Ridge","Yamhill-Carlton","Eola-Amity Hills","Umpqua Valley","Rogue Valley","Chehalem Mountains","McMinnville","Van Duzer Corridor","Laurelwood District","Tualatin Hills","Applegate Valley","Columbia Gorge"],"Washington":["Columbia Valley","Yakima Valley","Walla Walla Valley","Red Mountain","Horse Heaven Hills","Rattlesnake Hills","Wahluke Slope","Royal Slope","Candy Mountain","Snipes Mountain","Lake Chelan","Naches Heights","Ancient Lakes"],"New York":["Finger Lakes","Long Island","North Fork of Long Island","Hudson River Region","Cayuga Lake","Seneca Lake"],"Virginie":["Monticello","Shenandoah Valley (VA)","Middleburg","Shenandoah Valley"],"Texas":["Texas Hill Country","Texas High Plains"],"Idaho":["Snake River Valley"]},"Argentine":{"Mendoza":["Mendoza","Luján de Cuyo","Valle de Uco","Maipú","San Rafael","Tupungato","Agrelo","Gualtallary","Paraje Altamira","Los Chacayes","Vista Flores","Perdriel","Las Compuertas","Medrano","San Carlos","Tunuyán","Vistalba"],"Salta":["Cafayate","Valles Calchaquíes","Molinos"],"San Juan":["San Juan","Valle de Tulum","Pedernal","Valle de Pedernal","Valle de Zonda"],"Patagonie":["Río Negro","Neuquén","Patagonia","Chubut"],"La Rioja (AR)":["La Rioja"],"La Rioja":["Famatina"],"Catamarca":["Fiambalá"]},"Chili":{"Vallée Centrale":["Maipo Valley","Rapel Valley","Cachapoal Valley","Colchagua Valley","Curicó Valley","Maule Valley","Apalta","Marchigüe","Peumo","Requínoa","Los Lingues","Pumanque"],"Aconcagua":["Aconcagua Valley","Casablanca Valley","San Antonio Valley","Leyda Valley","Casablanca","Leyda","San Antonio"],"Coquimbo":["Elqui Valley","Limarí Valley","Choapa Valley","Choapa","Elqui","Limarí"],"Sud":["Itata Valley","Bío-Bío Valley","Malleco Valley","Bío Bío","Itata","Malleco"],"Valle Central":["Alto Maipo","Apalta","Cachapoal","Colchagua","Curicó","Maipo","Maule","Rapel"],"Austral":["Cautín","Osorno"]},"Australie":{"Australie-Méridionale":["Barossa Valley","Eden Valley","Clare Valley","McLaren Vale","Coonawarra","Adelaide Hills","Padthaway","Langhorne Creek","Wrattonbully","Southern Fleurieu","Kangaroo Island","Riverland","Currency Creek"],"Nouvelle-Galles du Sud":["Hunter Valley","Mudgee","Orange","Riverina","Canberra District","Hilltops"],"Victoria":["Yarra Valley","Mornington Peninsula","Rutherglen","Heathcote","Geelong","Grampians","Beechworth","King Valley","Macedon Ranges","Gippsland","Pyrenees","Alpine Valleys","Goulburn Valley","Nagambie Lakes","Strathbogie Ranges"],"Australie-Occidentale":["Margaret River","Great Southern","Frankland River","Pemberton","Mount Barker","Swan Valley"],"Tasmanie":["Tasmania","Tamar Valley","Coal River Valley","Pipers River"]},"Nouvelle-Zélande":{"Île du Sud":["Marlborough","Central Otago","Nelson","Canterbury","Waipara Valley","Awatere Valley","Wairau Valley","Southern Valleys","Bannockburn","Gibbston","Bendigo","Waitaki Valley","North Canterbury","Waipara"],"Île du Nord":["Hawke's Bay","Gimblett Gravels","Martinborough","Wairarapa","Gisborne","Auckland","Waiheke Island","Northland","Te Awanga","Bridge Pa Triangle","Matakana","Kumeu"]},"Afrique du Sud":{"Western Cape":["Stellenbosch","Paarl","Franschhoek","Constantia","Swartland","Walker Bay","Hemel-en-Aarde","Elgin","Robertson","Durbanville","Wellington","Tulbagh","Darling","Breedekloof","Cederberg","Simonsberg-Stellenbosch","Jonkershoek Valley","Banghoek","Devon Valley","Bottelary","Polkadraai Hills","Voor Paardeberg","Riebeekberg","Malmesbury","Piekenierskloof","Overberg","Sutherland-Karoo (WC)"],"Northern Cape":["Douglas","Sutherland-Karoo"],"Coastal Region":["Constantia","Darling","Durbanville","Franschhoek","Paarl","Stellenbosch","Swartland","Tygerberg"],"Cape South Coast":["Cape Agulhas","Elgin","Elim","Hemel-en-Aarde","Walker Bay"],"Breede River Valley":["Breedekloof","Robertson","Worcester"],"Olifants River":["Citrusdal Mountain","Lutzville Valley"],"Klein Karoo":["Calitzdorp","Langeberg-Garcia"]},"Suisse":{"Valais":["Valais","Fendant","Dôle","Chamoson","Fully"],"Vaud":["Lavaux","Dézaley","Calamin","Chablais","La Côte"],"Genève":["Genève"],"Neuchâtel":["Neuchâtel"],"Tessin":["Ticino"],"Grisons":["Bündner Herrschaft"]},"Hongrie":{"Tokaj":["Tokaji","Tokaji Aszú","Tokaji Szamorodni","Tokaji Eszencia","Tokaji Fordítás","Mád"],"Villány":["Villány"],"Eger":["Egri Bikavér"],"Somló":["Somló"],"Badacsony":["Badacsony"],"Balaton":["Balatonfüred-Csopak","Balaton-felvidék","Nagy-Somló","Badacsony"],"Szekszárd":["Szekszárd"]},"Grèce":{"Macédoine":["Naoussa","Amyndeon","Goumenissa","Amynteo"],"Péloponnèse":["Nemea","Mantinia","Patras","Nemea Grande Réserve","Monemvasia"],"Îles":["Santorini","Samos","Paros","Limnos","Rhodes","Nykteri","Vinsanto de Santorin","Muscat de Samos"],"Crète":["Peza","Archanes","Dafnes"],"Attique":["Retsina","Attiki"],"Cyclades":["Paros","Santorini"],"Îles Ioniennes":["Céphalonie","Robola de Céphalonie"],"Samos":["Muscat de Samos"]},"Autres pays":{"Europe":["Moldavie","Roumanie","Bulgarie","Croatie","Slovénie","Géorgie","Angleterre","Luxembourg","Serbie","République tchèque","Slovaquie","Macédoine du Nord","Monténégro","Ukraine","Russie","Turquie","Chypre","Malte","Kakhétie","Moselle luxembourgeoise","Sussex"],"Monde":["Canada","Uruguay","Brésil","Mexique","Pérou","Bolivie","Chine","Japon","Inde","Liban","Israël","Maroc","Algérie","Tunisie","Égypte","Thaïlande","Vietnam"],"Amériques":["Bolivie","Brésil","Canada","Canelones","Mexique","Niagara Peninsula","Okanagan Valley","Prince Edward County","Pérou","Serra Gaúcha","Uruguay","Vale dos Vinhedos","Valle de Guadalupe"],"Asie & Afrique":["Algérie","Chine","Galilée","Inde","Israël","Japon","Judean Hills","Liban","Maroc","Nashik","Ningxia","Thaïlande","Tunisie","Vallée de la Bekaa","Yamanashi"]}};
+const WINE_GRAPES = ["Abouriou","Agiorgitiko","Aglianico","Aidani","Airén","Albariño","Alfrocheiro","Alicante Bouschet","Aligoté","Altesse","Alvarinho","Amigne","Antão Vaz","Arbane","Areni","Arinarnoa","Arinto","Arneis","Arrufiac","Assyrtiko","Athiri","Auxerrois","Bacchus","Baga","Barbera","Baroque","Bical","Blaufränkisch","Bobal","Bonarda","Bourboulenc","Bovale","Boğazkere","Braucol","Braucol (Fer Servadou)","Bual","Cabernet Franc","Cabernet Sauvignon","Caladoc","Cannonau","Carignan","Carignano","Cariñena","Carménère","Carricante","Casavecchia","Castelão","Castets","Catarratto","Catawba","Cereza","Chardonnay","Chasselas","Chenin","Chenin Blanc","Cinsault","Clairette","Coda di Volpe","Colombard","Completer","Concord","Cortese","Corvina","Counoise","Courbu","Criolla","Croatina","Côt","Dolcetto","Dornfelder","Duras","Elbling","Encruzado","Erbaluce","Falanghina","Favorita","Fer Servadou","Fernão Pires","Fiano","Folle Blanche","Frappato","Freisa","Friulano","Furmint","Gaglioppo","Gamay","Garganega","Garnacha","Garnacha Tinta","Gewurztraminer","Glera","Godello","Graciano","Greco","Grenache","Grenache (Garnacha)","Grenache Blanc","Grignolino","Grillo","Gringet","Grolleau","Gros Manseng","Grüner Veltliner","Humagne","Huxelrebe","Hárslevelű","Jacquère","Jaen","Juhfark","Jurançon Noir","Kadarka","Kerner","Kisi","Kékfrankos","Lagrein","Lemberger","Limnio","Loin de l'Œil","Loureiro","Macabeo","Malagousia","Malbec","Malbec (Côt)","Malmsey","Malvasia","Malvasia Istriana","Malvasía","Marsanne","Marselan","Mauzac","Mavrodaphne","Mazuelo","Melon","Melon de Bourgogne","Mencía","Merlot","Molette","Molinara","Monastrell","Mondeuse","Montepulciano","Moscatel","Moscato Bianco","Moschofilero","Mourvèdre","Mourvèdre (Monastrell)","Mtsvane","Muscadelle","Muscardin","Muscat","Muscat d'Alexandrie","Muscat d'Alsace","Muscat Ottonel","Muscat à Petits Grains","Müller-Thurgau","Nebbiolo","Negroamaro","Nerello Cappuccio","Nerello Mascalese","Nero d'Avola","Neuburger","Niagara","Nielluccio","Norton","Nuragus","Négrette","Palomino","Parellada","Passerina","Pecorino","Pedro Giménez","Pedro Ximénez","Perricone","Persan","Petit Courbu","Petit Manseng","Petit Meslier","Petit Verdot","Petite Arvine","Petite Sirah","Picolit","Picpoul","Piedirosso","Pineau d'Aunis","Pinot Blanc","Pinot Gris","Pinot Meunier","Pinot Noir","Pinotage","Plavac Mali","Portugieser","Poulsard","Prieto Picudo","Primitivo","Primitivo (Zinfandel)","Prunelard","Ramisco","Refosco","Ribolla Gialla","Riesling","Rivaner","Rkatsiteli","Robola","Roditis","Rolle","Rolle (Vermentino)","Romorantin","Rondinella","Rotgipfler","Roussanne","Ruchè","Ruché","Sacy","Sagrantino","Sangiovese","Sankt Laurent","Saperavi","Sauvignon Blanc","Sauvignon Gris","Sauvignonasse","Savagnin","Savatiano","Scheurebe","Schiava","Sciaccarello","Semillon","Sercial","Seyval Blanc","Spätburgunder","St. Laurent","Susumaniello","Sylvaner","Syrah","Syrah (Shiraz)","Sémillon","Tannat","Tempranillo","Teran","Teroldego","Terret Noir","Tibouren","Tinta Barroca","Tinta Roriz","Tinto Cão","Torrontés","Touriga Franca","Touriga Nacional","Trebbiano","Treixadura","Trincadeira","Trollinger","Trousseau","Ugni Blanc","Vaccarèse","Verdejo","Verdelho","Verdicchio","Vermentino","Vernaccia","Vidal","Vidiano","Vignoles","Vilana","Viognier","Vitovska","Viura","Viura (Macabeo)","Vranac","Welschriesling","Xarel·lo","Xinomavro","Zalema","Zibibbo","Zierfandler","Zinfandel","Zweigelt","Öküzgözü"];
+
+// Index inverses : depuis une appellation, retrouver sa région et son pays.
+const _WW_APP2 = (() => {
+  const m = {};
+  for (const [pays, regs] of Object.entries(WINE_WORLD))
+    for (const [reg, apps] of Object.entries(regs))
+      for (const a of apps) if (!m[normKey(a)]) m[normKey(a)] = { region: reg, country: pays };
+  return m;
+})();
+const _WW_REG2 = (() => {
+  const m = {};
+  for (const [pays, regs] of Object.entries(WINE_WORLD))
+    for (const reg of Object.keys(regs)) if (!m[normKey(reg)]) m[normKey(reg)] = pays;
+  return m;
+})();
+const wwCountries = () => Object.keys(WINE_WORLD).sort((a, b) =>
+  a === "Autres pays" ? 1 : b === "Autres pays" ? -1 : a.localeCompare(b));
+const wwRegions = (pays) => {
+  if (pays && WINE_WORLD[pays]) return Object.keys(WINE_WORLD[pays]).sort((a, b) => a.localeCompare(b));
+  return Object.keys(_WW_REG2).length ? [...new Set(
+    Object.values(WINE_WORLD).flatMap(r => Object.keys(r)))].sort((a, b) => a.localeCompare(b)) : [];
+};
+const wwAppellations = (pays, region) => {
+  if (region) {
+    const p = pays && WINE_WORLD[pays] && WINE_WORLD[pays][region] ? pays : _WW_REG2[normKey(region)];
+    const list = p ? ((WINE_WORLD[p] || {})[region] || []) : [];
+    if (list.length) return [...list].sort((a, b) => a.localeCompare(b));
+  }
+  if (pays && WINE_WORLD[pays])
+    return [...new Set(Object.values(WINE_WORLD[pays]).flat())].sort((a, b) => a.localeCompare(b));
+  return [...new Set(Object.values(WINE_WORLD).flatMap(r => Object.values(r).flat()))]
+    .sort((a, b) => a.localeCompare(b));
+};
+const wwResolve = (appellation) => _WW_APP2[normKey(appellation || "")] || null;
+const wwCountryOfRegion = (region) => _WW_REG2[normKey(region || "")] || "";
+
 // ── Icônes HD des boutons du header (v7.1.0) ─────────────────────────────────
 // Tracés vectoriels 512×512 de game-icons.net (Delapouite & Lorc, CC BY 3.0 —
 // crédit dans le README). Choix utilisateur dans ⚙️ Options → Personnalisation,
@@ -1491,12 +1546,11 @@ class MillesimeCard extends HTMLElement {
 
   // ── Recherche texte ───────────────────────────────────────────────────────────
 
-  async _searchWine(query) {
+  async _searchWine(query, context = null) {
     try {
-      return await this._hass.connection.sendMessagePromise({
-        type: "millesime/search_wine",
-        query,
-      });
+      const msg = { type: "millesime/search_wine", query };
+      if (context && Object.keys(context).length) msg.context = context;   // v7.1.9
+      return await this._hass.connection.sendMessagePromise(msg);
     } catch (err) {
       console.error("[Millésime] searchWine:", err);
       return { results: [], error: "service_unavailable", source: "off" };
@@ -1919,6 +1973,127 @@ class MillesimeCard extends HTMLElement {
 
   // ── HTML formulaire bouteille ──────────────────────────────────────────────────
 
+  // ── Contradictions IA vs saisie (v7.1.9) ──────────────────────────────────
+  // Jusqu'ici, un résultat Gemini ÉCRASAIT silencieusement ce que l'utilisateur
+  // avait saisi. Or l'IA se trompe parfois de cuvée : on compare donc, et on
+  // rend la main dès qu'un écart est significatif. Les champs vides sont
+  // complétés sans rien demander — c'est justement le but de la recherche.
+  _CONFLICT_FIELDS = [
+    { id: "bt-vintage",     key: "vintage",     label: "Millésime",   icon: "📅", strong: true },
+    { id: "bt-name",        key: "name",        label: "Nom du vin",  icon: "🍷" },
+    { id: "bt-producer",    key: "producer",    label: "Producteur",  icon: "🏛️" },
+    { id: "bt-appellation", key: "appellation", label: "Appellation", icon: "🏷️" },
+    { id: "bt-region",      key: "region",      label: "Région",      icon: "🌍" },
+    { id: "bt-country",     key: "country",     label: "Pays",        icon: "🗺️" },
+    { id: "bt-price",       key: "price",       label: "Prix",        icon: "💶", price: true },
+  ];
+
+  // Deux textes sont « équivalents » si seules la casse, les accents ou la
+  // ponctuation les séparent — inutile de déranger l'utilisateur pour ça.
+  _sameText(a, b) {
+    const n = (s) => String(s ?? "").toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")   // accents retirés d'abord
+      .replace(/[^a-z0-9]+/g, " ")                        // ponctuation → espace
+      .replace(/\bch\b|\bchat\b|\bchateau\b/g, "chateau")  // « Ch. » ≡ « Château »
+      .replace(/\bdom\b|\bdomaine\b/g, "domaine")
+      .replace(/\s+/g, " ").trim();
+    return n(a) === n(b);
+  }
+
+  _detectConflicts(box, w) {
+    const conflicts = [], filled = [];
+    for (const f of this._CONFLICT_FIELDS) {
+      const el = box.querySelector(`#${f.id}`);
+      if (!el) continue;
+      const mine = String(el.value ?? "").trim();
+      const theirs = String(w[f.key] ?? "").trim();
+      if (!theirs || theirs === "0") continue;          // l'IA n'a rien à proposer
+      if (!mine) { filled.push(f.label); continue; }    // champ vide → on complète
+      if (f.price) {
+        const a = parseFloat(mine.replace(",", ".")), b = parseFloat(theirs);
+        if (!isFinite(a) || !isFinite(b) || a <= 0 || b <= 0) continue;
+        const gap = Math.abs(b - a) / a;
+        // Seuil de 30 % : un écart de prix marqué signale souvent une AUTRE cuvée
+        if (gap >= 0.30) conflicts.push({ ...f, mine, theirs, gap: Math.round(gap * 100) });
+        continue;
+      }
+      if (!this._sameText(mine, theirs)) conflicts.push({ ...f, mine, theirs });
+    }
+    return { conflicts, filled };
+  }
+
+  _conflictHTML(w, conflicts, filled) {
+    const title = esc(w.name || "") + (w.vintage ? " " + esc(w.vintage) : "");
+    return `
+      <div class="mm-header">
+        <span class="mm-title">⚖️ Vérifier la proposition</span>
+        <button class="mm-close" data-close>✕</button>
+      </div>
+      <div class="mm-body">
+        <div class="cf-intro">
+          L'IA propose <b>${title}</b>.
+          ${conflicts.length} information${conflicts.length > 1 ? "s diffèrent" : " diffère"} de votre saisie —
+          choisissez ce qu'il faut garder.
+        </div>
+        ${filled.length ? `<div class="cf-ok">✓ ${filled.length} champ${filled.length > 1 ? "s vides ont" : " vide a"}
+          été complété${filled.length > 1 ? "s" : ""} sans conflit (${esc(filled.join(", "))}).</div>` : ""}
+        ${conflicts.map((c, i) => `
+          <div class="cf-row" data-i="${i}">
+            <div class="cf-lbl">${c.icon} ${esc(c.label)}</div>
+            <div class="cf-opts">
+              <button type="button" class="cf-opt sel" data-pick="mine">
+                <span class="cf-t">Votre saisie</span>
+                <span class="cf-v">${esc(c.mine)}${c.price ? " €" : ""}</span>
+              </button>
+              <button type="button" class="cf-opt" data-pick="theirs">
+                <span class="cf-t">Proposition IA</span>
+                <span class="cf-v">${esc(c.theirs)}${c.price ? " €" : ""}</span>
+              </button>
+            </div>
+            ${c.strong ? `<div class="cf-flag">⚠️ Millésime différent — souvent le signe d'une autre bouteille.</div>` : ""}
+            ${c.price ? `<div class="cf-flag">⚠️ Écart de ${c.gap} % — il s'agit peut-être d'une autre cuvée.</div>` : ""}
+          </div>`).join("")}
+      </div>
+      <div class="mm-footer">
+        <button class="mm-btn mm-btn-ghost" id="cf-keep">Garder toutes mes saisies</button>
+        <button class="mm-btn mm-btn-primary" id="cf-apply">Valider mes choix</button>
+      </div>`;
+  }
+
+  // Ouvre l'écran de vérification PAR-DESSUS le formulaire (v7.1.9) : le
+  // formulaire reste intact dessous, on n'y touche qu'après décision.
+  _openConflict(box, w, conflicts, filled) {
+    const host = box.getRootNode?.() || document;
+    const prev = host.querySelector?.(".cf-overlay");
+    prev?.remove();
+    const ov = document.createElement("div");
+    ov.className = "cf-overlay";
+    ov.innerHTML = `<div class="cf-box mm-box">${this._conflictHTML(w, conflicts, filled)}</div>`;
+    (box.parentNode || document.body).appendChild(ov);
+
+    const picks = conflicts.map(() => "mine");        // saisie utilisateur par défaut
+    ov.querySelectorAll(".cf-row").forEach((row, i) => {
+      row.querySelectorAll(".cf-opt").forEach((opt) =>
+        opt.addEventListener("click", () => {
+          row.querySelectorAll(".cf-opt").forEach(o => o.classList.remove("sel"));
+          opt.classList.add("sel");
+          picks[i] = opt.dataset.pick;
+        }));
+    });
+    const close = () => ov.remove();
+    ov.querySelector("[data-close]")?.addEventListener("click", close);
+    ov.querySelector("#cf-keep")?.addEventListener("click", close);
+    ov.querySelector("#cf-apply")?.addEventListener("click", () => {
+      conflicts.forEach((c, i) => {
+        if (picks[i] !== "theirs") return;
+        const el = box.querySelector(`#${c.id}`);
+        if (el) el.value = c.theirs;
+      });
+      close();
+      this._showToast("success", "Fiche mise à jour ✓");
+    });
+  }
+
   _bottleFormHTML(wine, pendingSlot) {
     const racks = this._data?.cellar?.racks || [];
     const isEdit = !!wine;
@@ -1945,6 +2120,14 @@ class MillesimeCard extends HTMLElement {
           </div>
           <div id="search-banner"></div>
           <div id="viv-results" class="mm-viv-results"></div>
+          <!-- v7.1.9 : identification À PARTIR DES CHAMPS déjà remplis. Sans ce
+               bouton, un utilisateur dont le scan a échoué mais qui connaît son
+               appellation n'avait aucun moyen de relancer l'IA. -->
+          <button class="mm-btn-identify" id="bt-identify" type="button">
+            🔍 Identifier avec mes infos
+          </button>
+          <div class="mm-idhint">Renseignez ce que vous savez (appellation, producteur, millésime…) :
+            l'IA s'appuie dessus pour trouver le bon vin et compléter le reste.</div>
         </div>
 
         <!-- Aperçu image -->
@@ -2000,11 +2183,17 @@ class MillesimeCard extends HTMLElement {
         <div class="mm-row">
           <div class="mm-field">
             <label class="mm-label">Producteur</label>
-            <input class="mm-input" id="bt-producer" value="${esc(b.producer || "")}" placeholder="Domaine...">
+            <input class="mm-input" id="bt-producer" list="dl-producer" autocomplete="off"
+              value="${esc(b.producer || "")}" placeholder="Domaine...">
+            <datalist id="dl-producer">
+              ${this._producerSuggestions().map(n => `<option value="${esc(n)}"></option>`).join("")}
+            </datalist>
           </div>
           <div class="mm-field">
             <label class="mm-label">Appellation</label>
-            <input class="mm-input" id="bt-appellation" value="${esc(b.appellation || "")}" placeholder="Pomerol, Chablis...">
+            <input class="mm-input" id="bt-appellation" list="dl-app" autocomplete="off"
+              value="${esc(b.appellation || "")}" placeholder="Pomerol, Chablis...">
+            <datalist id="dl-app"></datalist>
           </div>
         </div>
         <div class="mm-row">
@@ -2085,13 +2274,56 @@ class MillesimeCard extends HTMLElement {
           <div class="mm-photo-hint">La photo prise pour scanner l'étiquette devient aussi la photo affichée.</div>
         </div>
 
-        <!-- Champs cachés remplis par Gemini -->
-        <input type="hidden" id="bt-image_url"   value="${esc(b.image_url    || "")}">
-        <input type="hidden" id="bt-vivino_url"  value="${esc(b.vivino_url   || "")}">
-        <input type="hidden" id="bt-region"      value="${esc(b.region       || "")}">
-        <input type="hidden" id="bt-country"     value="${esc(b.country      || "")}">
-        <input type="hidden" id="bt-tasting"     value="${esc(b.tasting_notes|| "")}">
-        <input type="hidden" id="bt-pairing"     value="${esc(b.food_pairing || "")}">
+        <!-- v7.1.9 : ORIGINE — ces champs étaient cachés et remplis par l'IA
+             seulement. Ils sont désormais saisissables, avec un référentiel
+             mondial en cascade (pays → région → appellation). -->
+        <div class="mm-section-title">🌍 Origine</div>
+        <div class="mm-row">
+          <div class="mm-field">
+            <label class="mm-label">Pays</label>
+            <input class="mm-input" id="bt-country" list="dl-country" autocomplete="off"
+              value="${esc(b.country || "")}" placeholder="France">
+            <datalist id="dl-country">
+              ${wwCountries().map(c => `<option value="${esc(c)}"></option>`).join("")}
+            </datalist>
+          </div>
+          <div class="mm-field">
+            <label class="mm-label">Région</label>
+            <input class="mm-input" id="bt-region" list="dl-region" autocomplete="off"
+              value="${esc(b.region || "")}" placeholder="Bordeaux">
+            <datalist id="dl-region"></datalist>
+          </div>
+        </div>
+        <div class="mm-idhint" style="margin:-4px 0 10px">Choisir une appellation (plus haut)
+          renseigne automatiquement la région et le pays.</div>
+        <!-- v7.1.9 : CÉPAGES — nouveau champ, plusieurs valeurs possibles -->
+        <div class="mm-section-title">🍇 Cépages</div>
+        <div class="mm-field">
+          <input class="mm-input" id="bt-grape-pick" list="dl-grape" autocomplete="off"
+            placeholder="Ajouter un cépage (assemblages possibles)…">
+          <datalist id="dl-grape">
+            ${WINE_GRAPES.map(g => `<option value="${esc(g)}"></option>`).join("")}
+          </datalist>
+          <div class="mm-chips" id="bt-grape-chips"></div>
+          <input type="hidden" id="bt-grapes" value="${esc(b.grapes || "")}">
+        </div>
+
+        <!-- v7.1.9 : DÉGUSTATION — également cachés auparavant -->
+        <div class="mm-section-title">👃 Dégustation</div>
+        <div class="mm-field">
+          <label class="mm-label">Notes de dégustation</label>
+          <input class="mm-input" id="bt-tasting" value="${esc(b.tasting_notes || "")}"
+            placeholder="Fruits noirs, tanins soyeux…">
+        </div>
+        <div class="mm-field">
+          <label class="mm-label">Accords mets-vins</label>
+          <input class="mm-input" id="bt-pairing" value="${esc(b.food_pairing || "")}"
+            placeholder="Viandes rouges, fromages affinés">
+        </div>
+
+        <!-- URL techniques : restent cachées (non saisissables par nature) -->
+        <input type="hidden" id="bt-image_url"   value="${esc(b.image_url  || "")}">
+        <input type="hidden" id="bt-vivino_url"  value="${esc(b.vivino_url || "")}">
       </div>
       <div class="mm-footer">
         <button class="mm-btn mm-btn-ghost" data-close>Annuler</button>
@@ -2102,6 +2334,64 @@ class MillesimeCard extends HTMLElement {
   }
 
   _bindBottleForm(box, wine, pendingSlot) {
+    // ── v7.1.9 : cascade Pays → Région → Appellation ────────────────────────
+    // Les listes proposées sont filtrées par le niveau supérieur (15 à 40 choix
+    // au lieu de 765), et la déduction inverse remplit automatiquement les
+    // niveaux parents quand on choisit une appellation ou une région.
+    const cEl = box.querySelector("#bt-country");
+    const rEl = box.querySelector("#bt-region");
+    const aEl = box.querySelector("#bt-appellation");
+    const setList = (dlId, values) => {
+      const dl = box.querySelector(`#${dlId}`);
+      if (dl) dl.innerHTML = values.map(v => `<option value="${esc(v)}"></option>`).join("");
+    };
+    // v7.1.9 : cascade pays → région → appellation, sur la SOURCE UNIQUE.
+    // Sans pays choisi on propose tout, pour ne jamais présenter une liste vide.
+    const refreshRegions = () => setList("dl-region", wwRegions((cEl?.value || "").trim()));
+    const refreshApps = () => setList("dl-app",
+      wwAppellations((cEl?.value || "").trim(), (rEl?.value || "").trim()));
+    refreshRegions(); refreshApps();
+
+    cEl?.addEventListener("change", () => { refreshRegions(); refreshApps(); });
+    rEl?.addEventListener("change", () => {
+      const r = (rEl.value || "").trim();
+      const c = wwCountryOfRegion(r);
+      if (c && cEl && !cEl.value.trim()) cEl.value = c;   // déduction du pays
+      refreshApps();
+    });
+    aEl?.addEventListener("change", () => {
+      const res = wwResolve((aEl.value || "").trim());
+      if (!res) return;
+      if (rEl && !rEl.value.trim()) rEl.value = res.region;    // déduction de la région
+      if (cEl && !cEl.value.trim()) cEl.value = res.country;   // puis du pays
+      refreshRegions();
+    });
+
+    // ── v7.1.9 : cépages multiples (étiquettes retirables) ──────────────────
+    const gHidden = box.querySelector("#bt-grapes");
+    const gChips  = box.querySelector("#bt-grape-chips");
+    const gPick   = box.querySelector("#bt-grape-pick");
+    const grapes = (gHidden?.value || "").split(",").map(s => s.trim()).filter(Boolean);
+    const renderGrapes = () => {
+      if (gHidden) gHidden.value = grapes.join(", ");
+      if (!gChips) return;
+      gChips.innerHTML = grapes.map((g, i) =>
+        `<span class="mm-chip"><b>${esc(g)}</b><span class="mm-chip-x" data-i="${i}">✕</span></span>`).join("");
+      gChips.querySelectorAll(".mm-chip-x").forEach(x =>
+        x.addEventListener("click", () => { grapes.splice(parseInt(x.dataset.i), 1); renderGrapes(); }));
+    };
+    const addGrape = () => {
+      const v = (gPick?.value || "").trim();
+      if (!v) return;
+      // doublon insensible à la casse
+      if (!grapes.some(g => g.toLowerCase() === v.toLowerCase())) grapes.push(v);
+      if (gPick) gPick.value = "";
+      renderGrapes();
+    };
+    gPick?.addEventListener("change", addGrape);
+    gPick?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addGrape(); } });
+    renderGrapes();
+
     let searchTimer;
     const qInput   = box.querySelector("#viv-query");
     const results  = box.querySelector("#viv-results");
@@ -2170,8 +2460,14 @@ class MillesimeCard extends HTMLElement {
     photoRm?.addEventListener("click", () => { setPhoto(""); if (photoUrl) photoUrl.value = ""; });
 
     // ── Auto-remplissage depuis un résultat ──────────────────────────────────
-    const fillFrom = (w) => {
+    // v7.1.9 : applique un résultat SANS écraser une saisie divergente. Les
+    // champs vides sont complétés ; les écarts significatifs passent par
+    // l'écran de vérification (_conflictHTML) où l'utilisateur tranche.
+    const fillFrom = (w, force = false) => {
+      const protectedIds = force ? new Set() : new Set(
+        this._detectConflicts(box, w).conflicts.map(c => c.id));
       const set = (id, val) => {
+        if (protectedIds.has(id)) return;          // conflit → laissé à l'utilisateur
         const el = box.querySelector(`#${id}`);
         if (el && val != null && val !== "" && val !== 0) el.value = val;
       };
@@ -2197,6 +2493,7 @@ class MillesimeCard extends HTMLElement {
       set("bt-country",     w.country     || "");
       set("bt-tasting",     w.tasting_notes || "");
       set("bt-pairing",     w.food_pairing  || "");
+      if (w.grapes) { set("bt-grapes", w.grapes); box.dispatchEvent(new CustomEvent("mm-grapes-changed")); }
       const typeEl = box.querySelector("#bt-type");
       if (typeEl && w.type) typeEl.value = w.type;
       const shapeEl = box.querySelector("#bt-shape");
@@ -2206,6 +2503,10 @@ class MillesimeCard extends HTMLElement {
       if (w.image_url) {
         imgWrap.innerHTML = `<img src="${esc(w.image_url)}"
           style="width:56px;display:block;margin:0 auto 10px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.5)">`;
+      }
+      if (!force) {
+        const { conflicts, filled } = this._detectConflicts(box, w);
+        if (conflicts.length) this._openConflict(box, w, conflicts, filled);
       }
     };
 
@@ -2273,9 +2574,26 @@ class MillesimeCard extends HTMLElement {
         <span class="mm-spinner"></span> Recherche en cours...
       </div>`;
       searchTimer = setTimeout(async () => {
-        const response = await this._searchWine(q);
+        const response = await this._searchWine(q, this._formContext(box));   // v7.1.9
         showResults(response);
       }, 600);
+    });
+
+    // ── v7.1.9 : « Identifier avec mes infos » ───────────────────────────────
+    // Part des CHAMPS remplis plutôt que du texte de recherche. Réponse au cas
+    // remonté : scan infructueux, mais l'utilisateur connaît son appellation.
+    box.querySelector("#bt-identify")?.addEventListener("click", async () => {
+      const ctx = this._formContext(box);
+      const q = [ctx.name, ctx.producer, ctx.appellation, ctx.vintage]
+        .filter(Boolean).join(" ").trim();
+      if (!q) {
+        this._showToast("info", "Renseignez au moins le nom, le producteur ou l'appellation.");
+        return;
+      }
+      results.style.display = "block";
+      results.innerHTML = `<div class="mm-viv-loading"><span class="mm-spinner"></span> Identification en cours…</div>`;
+      const response = await this._searchWine(q, ctx);
+      showResults(response);
     });
 
     // ── Scan photo de l'étiquette ─────────────────────────────────────────────
@@ -2419,6 +2737,7 @@ class MillesimeCard extends HTMLElement {
         appellation:   txt("bt-appellation"),
         region:        txt("bt-region"),
         country:       txt("bt-country"),
+        grapes:        txt("bt-grapes"),          // v7.1.9 : cépages (liste séparée par virgules)
         price:         num("bt-price"),
         drink_from:    txt("bt-from"),
         drink_until:   txt("bt-until"),
@@ -5034,6 +5353,17 @@ class MillesimeCard extends HTMLElement {
     });
   }
 
+  // v7.1.9 : producteurs déjà saisis dans la cave — normalise « Ch. Saint Ahon »
+  // vs « Château Saint Ahon » sans liste mondiale à maintenir.
+  _producerSuggestions() {
+    const seen = new Map();
+    for (const w of (this._data?.wines || [])) {
+      const p = (w.producer || "").trim();
+      if (p) seen.set(p.toLowerCase(), p);
+    }
+    return [...seen.values()].sort((a, b) => a.localeCompare(b));
+  }
+
   _donorSuggestions() {
     // Noms de donateurs déjà saisis (champ « De la part de »), pour l'autocomplétion
     const set = new Set();
@@ -7239,18 +7569,21 @@ class MillesimeCard extends HTMLElement {
     const pickAt = (e, objs) => {
       setPtr(e);
       ray.setFromCamera(ptr, cam);
-      // v7.1.2 : les fantômes des couches hautes sont visible=false (pour ne pas
-      // laisser de trace de profondeur) mais doivent rester TAPPABLES. Le
-      // raycaster de three ignore les objets invisibles → on les rend visibles
-      // le temps du test d'intersection, puis on restaure leur état.
+      // v7.1.9 : DEUX PASSES. Auparavant on révélait d'emblée les fantômes des
+      // couches hautes (invisibles depuis la v7.1.2 mais devant rester
+      // tappables) : un fantôme placé devant une bouteille était alors touché
+      // en premier, ce qui volait le clic à la bouteille.
+      // Passe 1 — ce qui est RÉELLEMENT visible a toujours la priorité.
+      const hit = ray.intersectObjects(objs.filter(o => o.visible), false)[0];
+      if (hit) return hit;
+      // Passe 2 — rien de visible sous le curseur : on teste alors les
+      // emplacements masqués, le temps de l'intersection seulement.
       const hidden = objs.filter(o => !o.visible);
+      if (!hidden.length) return undefined;
       for (const o of hidden) o.visible = true;
-      const hit = ray.intersectObjects(objs, false)[0];
-      // Restaure l'état réel : les fantômes hauts (marqués _ghUp) redeviennent
-      // invisibles SAUF pendant un drag (_ghostsShown) ; tout autre objet
-      // temporairement révélé pour le test reprend sa visibilité
+      const hit2 = ray.intersectObjects(hidden, false)[0];
       for (const o of hidden) o.visible = o._ghUp ? _ghostsShown : false;
-      return hit;
+      return hit2;
     };
 
     // Clic simple : "click" est synthétisé par iOS après un vrai tap
@@ -7287,8 +7620,14 @@ class MillesimeCard extends HTMLElement {
 
     const onDown = (e) => {
       if (!e.isPrimary) return;
-      const hit = pickAt(e, pickables);
-      if (!hit || !hit.object.userData.wineId) return;
+      // v7.1.9 CORRECTIF : ne chercher QUE parmi les bouteilles.
+      // pickAt révèle temporairement les emplacements vides des couches hautes
+      // (pour qu'ils restent tappables malgré visible=false). En superposition,
+      // un de ces fantômes pouvait se trouver DEVANT une bouteille : le rayon le
+      // touchait en premier, il n'a pas de wineId, et la fonction sortait —
+      // rendant tout déplacement impossible alors que le simple tap marchait.
+      const hit = pickAt(e, pickables.filter(o => o.userData && o.userData.wineId));
+      if (!hit) return;
       drag = {
         ud: hit.object.userData, obj: hit.object,
         group: hit.object.parent, orig: hit.object.parent.position.clone(),
@@ -8424,6 +8763,28 @@ const MODAL_CSS = `
 .mm-body .seg3--sub { border-color:#5a2a33; background:rgba(123,29,46,0.10); }
 .mm-body .seg3--sub .seg3-btn { border-right-color:#5a2a33; }
 .mm-body .seg3--sub .seg3-btn.active { background:#7B1D2E; }
+/* ── Vérification des contradictions IA (v7.1.9) ── */
+.cf-overlay {
+  position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center;
+  background:rgba(0,0,0,0.62); padding:14px; animation:mm-fade 0.15s ease;
+}
+.cf-box { width:100%; max-width:440px; max-height:88vh; display:flex; flex-direction:column;
+  border-radius:16px; border:1px solid var(--mm-border); }
+.cf-intro { font-size:0.87em; line-height:1.6; margin-bottom:12px; }
+.cf-ok { font-size:0.79em; color:#8c8; background:rgba(46,92,59,0.15);
+  border-radius:8px; padding:8px 11px; margin-bottom:13px; line-height:1.5; }
+.cf-row { border:1px solid var(--mm-border); border-radius:11px; padding:11px;
+  margin-bottom:11px; background:var(--mm-bg2); }
+.cf-lbl { font-size:0.74em; color:var(--mm-muted); text-transform:uppercase;
+  letter-spacing:0.7px; margin-bottom:9px; }
+.cf-opts { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.cf-opt { display:flex; flex-direction:column; gap:4px; text-align:left;
+  border:1.5px solid var(--mm-border); border-radius:9px; padding:9px;
+  background:var(--mm-bg0); color:var(--mm-text); cursor:pointer; font-family:inherit; }
+.cf-opt.sel { border-color:var(--mm-accent); background:rgba(123,29,46,0.17); }
+.cf-t { font-size:0.66em; color:var(--mm-muted); text-transform:uppercase; letter-spacing:0.5px; }
+.cf-v { font-size:0.93em; line-height:1.35; word-break:break-word; }
+.cf-flag { font-size:0.71em; color:#d98; margin-top:7px; line-height:1.45; }
 /* ── Retrait ciblé d'une bouteille (v7.1.7) ── */
 .rp-list { display:flex; flex-direction:column; gap:7px; }
 .rp-item {
