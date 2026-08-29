@@ -1,4 +1,4 @@
-"""Millésime v7.1.9 — Cave à Vin pour Home Assistant.
+"""Millésime v7.1.11 — Cave à Vin pour Home Assistant.
 
 Modèles Gemini  : découverts dynamiquement au démarrage (GET /models sur la clé
                   de l'utilisateur), avec repli sur les modèles stables 2.5 flash.
@@ -36,7 +36,7 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN    = "millesime"
 PLATFORMS = ["sensor"]
 DATA_FILE = "millesime_data.json"
-VERSION   = "7.1.9"
+VERSION   = "7.1.11"
 
 OFF_UA       = f"Millesime-HA/{VERSION} (github.com/Redsklns/ha-millesime)"
 # Deux modèles séparés = deux pools de quota indépendants (free tier)
