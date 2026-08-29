@@ -1,5 +1,5 @@
 /**
- * Millésime Card v7.1.9
+ * Millésime Card v7.1.11
  * Cave à vin pour Home Assistant
  * - Recherche texte avec suggestions temps réel
  * - Lecture d'étiquette par photo (Gemini Vision)
@@ -7,7 +7,7 @@
  * - Journal de dégustation, recherche dans la cave, déplacement de casier
  */
 
-const MILLESIME_CARD_VERSION = "7.1.9";
+const MILLESIME_CARD_VERSION = "7.1.11";
 
 // ── Budget quotidien Gemini (free tier) ─────────────────────────────────────
 // Estimation codée en dur : ~250 requêtes/jour (Gemini 2.5 Flash, quotas
@@ -2089,9 +2089,66 @@ class MillesimeCard extends HTMLElement {
         const el = box.querySelector(`#${c.id}`);
         if (el) el.value = c.theirs;
       });
+      box._mmSyncPickers?.();   // v7.1.10 : menus alignés après arbitrage
       close();
       this._showToast("success", "Fiche mise à jour ✓");
     });
+  }
+
+  // ── Menu déroulant + saisie libre (v7.1.10) ───────────────────────────────
+  // Les listes de suggestions de la 7.1.9 n'offraient AUCUN repère visuel :
+  // rien n'indiquait qu'un référentiel existait, et il fallait deviner qu'il
+  // fallait taper pour voir des propositions. On rend donc un VRAI menu
+  // déroulant (molette native sur mobile), doublé d'une option « Autre » qui
+  // révèle un champ texte — la saisie libre reste possible pour une appellation
+  // ou un cépage absent du référentiel.
+  // L'identifiant reste porté par l'INPUT : la lecture du formulaire, le
+  // remplissage par l'IA et la détection des contradictions fonctionnent sans
+  // aucun changement.
+  _pickerHTML(id, value, options, placeholder, label) {
+    const v = String(value || "");
+    const known = options.includes(v);
+    const custom = !!v && !known;
+    return `
+      <label class="mm-label">${label}</label>
+      <select class="mm-input mm-pick" id="${id}-sel">
+        <option value="">— ${esc(placeholder)} —</option>
+        ${options.map(o => `<option value="${esc(o)}"${o === v ? " selected" : ""}>${esc(o)}</option>`).join("")}
+        <option value="__other__"${custom ? " selected" : ""}>✏️ Autre (saisir)…</option>
+      </select>
+      <input class="mm-input mm-pick-free" id="${id}" autocomplete="off"
+        value="${esc(v)}" placeholder="${esc(placeholder)}"
+        style="margin-top:6px${custom ? "" : ";display:none"}">`;
+  }
+
+  // Relie un menu à son champ. Retourne une fonction de rafraîchissement, pour
+  // les listes en cascade (le pays filtre les régions, la région les appellations).
+  _bindPicker(box, id, getOptions, placeholder, onChange) {
+    const sel = box.querySelector(`#${id}-sel`);
+    const inp = box.querySelector(`#${id}`);
+    if (!sel || !inp) return () => {};
+
+    const refresh = () => {
+      const opts = getOptions() || [];
+      const cur = String(inp.value || "");
+      const known = opts.includes(cur);
+      sel.innerHTML =
+        `<option value="">— ${esc(placeholder)} —</option>` +
+        opts.map(o => `<option value="${esc(o)}"${o === cur ? " selected" : ""}>${esc(o)}</option>`).join("") +
+        `<option value="__other__"${cur && !known ? " selected" : ""}>✏️ Autre (saisir)…</option>`;
+      inp.style.display = (cur && !known) ? "" : "none";
+    };
+
+    sel.addEventListener("change", () => {
+      if (sel.value === "__other__") {
+        inp.style.display = ""; inp.value = ""; inp.focus();
+      } else {
+        inp.value = sel.value; inp.style.display = "none";
+      }
+      onChange?.();
+    });
+    inp.addEventListener("change", () => onChange?.());
+    return refresh;
   }
 
   _bottleFormHTML(wine, pendingSlot) {
@@ -2190,10 +2247,8 @@ class MillesimeCard extends HTMLElement {
             </datalist>
           </div>
           <div class="mm-field">
-            <label class="mm-label">Appellation</label>
-            <input class="mm-input" id="bt-appellation" list="dl-app" autocomplete="off"
-              value="${esc(b.appellation || "")}" placeholder="Pomerol, Chablis...">
-            <datalist id="dl-app"></datalist>
+            ${this._pickerHTML("bt-appellation", b.appellation,
+              wwAppellations(b.country || "", b.region || ""), "Appellation", "Appellation")}
           </div>
         </div>
         <div class="mm-row">
@@ -2280,18 +2335,10 @@ class MillesimeCard extends HTMLElement {
         <div class="mm-section-title">🌍 Origine</div>
         <div class="mm-row">
           <div class="mm-field">
-            <label class="mm-label">Pays</label>
-            <input class="mm-input" id="bt-country" list="dl-country" autocomplete="off"
-              value="${esc(b.country || "")}" placeholder="France">
-            <datalist id="dl-country">
-              ${wwCountries().map(c => `<option value="${esc(c)}"></option>`).join("")}
-            </datalist>
+            ${this._pickerHTML("bt-country", b.country, wwCountries(), "Pays", "Pays")}
           </div>
           <div class="mm-field">
-            <label class="mm-label">Région</label>
-            <input class="mm-input" id="bt-region" list="dl-region" autocomplete="off"
-              value="${esc(b.region || "")}" placeholder="Bordeaux">
-            <datalist id="dl-region"></datalist>
+            ${this._pickerHTML("bt-region", b.region, wwRegions(b.country || ""), "Région", "Région")}
           </div>
         </div>
         <div class="mm-idhint" style="margin:-4px 0 10px">Choisir une appellation (plus haut)
@@ -2299,11 +2346,13 @@ class MillesimeCard extends HTMLElement {
         <!-- v7.1.9 : CÉPAGES — nouveau champ, plusieurs valeurs possibles -->
         <div class="mm-section-title">🍇 Cépages</div>
         <div class="mm-field">
-          <input class="mm-input" id="bt-grape-pick" list="dl-grape" autocomplete="off"
-            placeholder="Ajouter un cépage (assemblages possibles)…">
-          <datalist id="dl-grape">
-            ${WINE_GRAPES.map(g => `<option value="${esc(g)}"></option>`).join("")}
-          </datalist>
+          <select class="mm-input mm-pick" id="bt-grape-sel">
+            <option value="">— Ajouter un cépage (assemblages possibles) —</option>
+            ${WINE_GRAPES.map(g => `<option value="${esc(g)}">${esc(g)}</option>`).join("")}
+            <option value="__other__">✏️ Autre (saisir)…</option>
+          </select>
+          <input class="mm-input" id="bt-grape-pick" autocomplete="off" placeholder="Nom du cépage, puis Entrée"
+            style="margin-top:6px;display:none">
           <div class="mm-chips" id="bt-grape-chips"></div>
           <input type="hidden" id="bt-grapes" value="${esc(b.grapes || "")}">
         </div>
@@ -2341,31 +2390,32 @@ class MillesimeCard extends HTMLElement {
     const cEl = box.querySelector("#bt-country");
     const rEl = box.querySelector("#bt-region");
     const aEl = box.querySelector("#bt-appellation");
-    const setList = (dlId, values) => {
-      const dl = box.querySelector(`#${dlId}`);
-      if (dl) dl.innerHTML = values.map(v => `<option value="${esc(v)}"></option>`).join("");
-    };
-    // v7.1.9 : cascade pays → région → appellation, sur la SOURCE UNIQUE.
-    // Sans pays choisi on propose tout, pour ne jamais présenter une liste vide.
-    const refreshRegions = () => setList("dl-region", wwRegions((cEl?.value || "").trim()));
-    const refreshApps = () => setList("dl-app",
-      wwAppellations((cEl?.value || "").trim(), (rEl?.value || "").trim()));
-    refreshRegions(); refreshApps();
 
-    cEl?.addEventListener("change", () => { refreshRegions(); refreshApps(); });
-    rEl?.addEventListener("change", () => {
-      const r = (rEl.value || "").trim();
-      const c = wwCountryOfRegion(r);
-      if (c && cEl && !cEl.value.trim()) cEl.value = c;   // déduction du pays
-      refreshApps();
-    });
-    aEl?.addEventListener("change", () => {
-      const res = wwResolve((aEl.value || "").trim());
-      if (!res) return;
-      if (rEl && !rEl.value.trim()) rEl.value = res.region;    // déduction de la région
-      if (cEl && !cEl.value.trim()) cEl.value = res.country;   // puis du pays
-      refreshRegions();
-    });
+    // v7.1.10 : les trois niveaux sont désormais de VRAIS menus déroulants
+    // (_bindPicker), chacun renvoyant sa fonction de rafraîchissement. La
+    // cascade et les déductions inverses sont inchangées : seul l'affichage
+    // passe de la liste de suggestions au menu.
+    let refRegions = () => {}, refApps = () => {};
+    const refCountry = this._bindPicker(box, "bt-country", () => wwCountries(), "Pays",
+      () => { refRegions(); refApps(); });
+    refRegions = this._bindPicker(box, "bt-region",
+      () => wwRegions((cEl?.value || "").trim()), "Région", () => {
+        const c = wwCountryOfRegion((rEl?.value || "").trim());
+        if (c && cEl && !cEl.value.trim()) { cEl.value = c; refCountry(); }  // déduction du pays
+        refApps();
+      });
+    refApps = this._bindPicker(box, "bt-appellation",
+      () => wwAppellations((cEl?.value || "").trim(), (rEl?.value || "").trim()), "Appellation", () => {
+        const res = wwResolve((aEl?.value || "").trim());
+        if (!res) return;
+        if (rEl && !rEl.value.trim()) { rEl.value = res.region; }   // déduction de la région
+        if (cEl && !cEl.value.trim()) { cEl.value = res.country; } // puis du pays
+        refCountry(); refRegions();
+      });
+    refCountry(); refRegions(); refApps();
+    // Rafraîchit les menus après un remplissage par l'IA (les valeurs changent
+    // sans interaction utilisateur : sans cela le menu resterait désynchronisé)
+    box._mmSyncPickers = () => { refCountry(); refRegions(); refApps(); };
 
     // ── v7.1.9 : cépages multiples (étiquettes retirables) ──────────────────
     const gHidden = box.querySelector("#bt-grapes");
@@ -2390,6 +2440,18 @@ class MillesimeCard extends HTMLElement {
     };
     gPick?.addEventListener("change", addGrape);
     gPick?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addGrape(); } });
+    // v7.1.10 : le menu ajoute directement le cépage choisi ; « Autre » ouvre la
+    // saisie libre pour un cépage absent du référentiel.
+    const gSel = box.querySelector("#bt-grape-sel");
+    gSel?.addEventListener("change", () => {
+      if (gSel.value === "__other__") {
+        if (gPick) { gPick.style.display = ""; gPick.value = ""; gPick.focus(); }
+      } else if (gSel.value) {
+        if (gPick) { gPick.value = gSel.value; gPick.style.display = "none"; }
+        addGrape();
+      }
+      gSel.value = "";                     // le menu revient à son invite
+    });
     renderGrapes();
 
     let searchTimer;
@@ -2494,6 +2556,7 @@ class MillesimeCard extends HTMLElement {
       set("bt-tasting",     w.tasting_notes || "");
       set("bt-pairing",     w.food_pairing  || "");
       if (w.grapes) { set("bt-grapes", w.grapes); box.dispatchEvent(new CustomEvent("mm-grapes-changed")); }
+      box._mmSyncPickers?.();   // v7.1.10 : menus alignés sur les valeurs reçues
       const typeEl = box.querySelector("#bt-type");
       if (typeEl && w.type) typeEl.value = w.type;
       const shapeEl = box.querySelector("#bt-shape");
@@ -7530,12 +7593,38 @@ class MillesimeCard extends HTMLElement {
     // géantes sur desktop) — on garde l'échelle de ~MAX_W px et on CENTRE le casier
     // dans la largeur réelle. Sous MAX_W (mobile/colonne), marge = 0 → inchangé.
     const MAX_W = 780;
+    // v7.1.11 — PLAFOND GPU. Une grande cave (13 casiers × 3 niveaux) demande un
+    // canvas de plusieurs milliers de pixels ; multiplié par le pixelRatio du
+    // mobile, le tampon de rendu dépassait la taille maximale de texture du GPU
+    // (4096 px sur la quasi-totalité des appareils Android). Le navigateur
+    // écrêtait alors silencieusement le tampon : les casiers du haut
+    // disparaissaient, et l'image ne correspondant plus à la projection, les
+    // taps et le glisser-déposer tombaient à côté. Sur PC, la limite plus élevée
+    // masquait le problème — d'où un bug invisible côté développeur.
+    const MAX_TEX = Math.max(2048, Math.min(
+      glCtx?.getParameter?.(glCtx.MAX_TEXTURE_SIZE) || 4096, 8192));
+    const SAFE_PX = Math.floor(MAX_TEX * 0.97);      // marge de sécurité
     const layout = (w) => {
       curW = w;
       const effW = Math.min(w, MAX_W);
       const usable = Math.max(120, effW - RAIL_PX);
-      const pxPerUnit = usable / (s3.x * MARGIN_X);
-      const h = Math.max(150, Math.round((viewH + PAD_TOP + PAD_BOT) * pxPerUnit));   // v7.1.8
+      let pxPerUnit = usable / (s3.x * MARGIN_X);
+      let h = Math.max(150, Math.round((viewH + PAD_TOP + PAD_BOT) * pxPerUnit));
+
+      // 1) On réduit d'abord la finesse du rendu (jusqu'à 1) : la scène reste
+      //    entière, seule la netteté baisse — invisible sur une cave normale.
+      const wantDpr = Math.min(window.devicePixelRatio || 1, 2);
+      let dpr = wantDpr;
+      while (dpr > 1 && (h * dpr > SAFE_PX || w * dpr > SAFE_PX)) dpr -= 0.25;
+      dpr = Math.max(1, Math.min(dpr, SAFE_PX / Math.max(h, w, 1)));
+      // 2) Si la scène dépasse encore à finesse 1, on dézoome pour TOUT montrer
+      //    plutôt que d'en tronquer une partie.
+      if (h > SAFE_PX) {
+        const k = SAFE_PX / h;
+        pxPerUnit *= k;
+        h = Math.max(150, Math.round(h * k));
+      }
+      renderer.setPixelRatio(dpr);
       const hW = (s3.x * MARGIN_X) / 2;
       const extra = RAIL_PX / pxPerUnit;       // unités monde à droite (hors clayettes)
       // Marge de centrage quand la carte dépasse MAX_W (sinon 0)
@@ -7635,6 +7724,37 @@ class MillesimeCard extends HTMLElement {
       };
     };
 
+    // ── Défilement automatique pendant le glisser (v7.1.11) ──────────────────
+    // Sur une grande cave, la scène 3D mesure plusieurs milliers de pixels : on
+    // ne voit que deux ou trois étages à la fois. Le glisser-déposer exigeant
+    // que la source ET la destination soient visibles en même temps, déplacer
+    // une bouteille vers un autre étage était tout simplement IMPOSSIBLE.
+    // En approchant du haut ou du bas de l'écran, la page défile donc d'elle-même.
+    const EDGE_PX = 90;          // zone sensible en bord d'écran
+    const SPEED_MAX = 22;        // pixels par image, au contact du bord
+    let _scrollRAF = null, _scrollV = 0, _lastPtrEvt = null;
+    const scroller = () => {
+      if (!drag || !drag.active || !_scrollV) { _scrollRAF = null; return; }
+      const before = window.scrollY;
+      window.scrollBy(0, _scrollV);
+      // Le contenu suit le curseur pendant le défilement (sinon la bouteille
+      // resterait figée à l'écran alors que la scène bouge sous elle)
+      if (window.scrollY !== before && _lastPtrEvt) onMove(_lastPtrEvt);
+      _scrollRAF = requestAnimationFrame(scroller);
+    };
+    const updateAutoScroll = (e) => {
+      if (!drag || !drag.active) { _scrollV = 0; return; }
+      const vh = window.innerHeight || 800;
+      const top = e.clientY, bottom = vh - e.clientY;
+      // Vitesse minimale de 1 px : sans elle, l'arrondi créait une bande morte à
+      // l'entrée de la zone où le défilement ne démarrait pas.
+      const spd = (d) => Math.max(1, Math.round(SPEED_MAX * (1 - d / EDGE_PX)));
+      if (top < EDGE_PX)          _scrollV = -spd(top);
+      else if (bottom < EDGE_PX)  _scrollV =  spd(bottom);
+      else                        _scrollV = 0;
+      if (_scrollV && !_scrollRAF) _scrollRAF = requestAnimationFrame(scroller);
+    };
+
     const onMove = (e) => {
       if (!drag) return;
       if (!drag.active) {
@@ -7676,6 +7796,8 @@ class MillesimeCard extends HTMLElement {
         hoverObj = null;
         dropRing.visible = false;
       }
+      _lastPtrEvt = e;            // v7.1.11 : mémorisé pour le défilement auto
+      updateAutoScroll(e);
       draw();
     };
 
@@ -7697,6 +7819,8 @@ class MillesimeCard extends HTMLElement {
 
     const endDrag = (commit) => {
       if (!drag) return;
+      _scrollV = 0; _lastPtrEvt = null;        // v7.1.11 : stoppe le défilement auto
+      if (_scrollRAF) { cancelAnimationFrame(_scrollRAF); _scrollRAF = null; }
       showUpperGhosts(false);   // v7.1.0 : les cibles des couches hautes se rangent
       const wasActive = drag.active;
       const src = drag.ud;
@@ -8763,6 +8887,20 @@ const MODAL_CSS = `
 .mm-body .seg3--sub { border-color:#5a2a33; background:rgba(123,29,46,0.10); }
 .mm-body .seg3--sub .seg3-btn { border-right-color:#5a2a33; }
 .mm-body .seg3--sub .seg3-btn.active { background:#7B1D2E; }
+/* ── Menus déroulants du référentiel (v7.1.10) ── */
+/* La flèche est le repère visuel qui manquait en 7.1.9 : elle signale
+   immédiatement qu'une liste existe, sans avoir à deviner qu'il faut taper. */
+select.mm-pick {
+  appearance:none; -webkit-appearance:none;
+  background-image:linear-gradient(45deg,transparent 50%,var(--mm-muted) 50%),
+                   linear-gradient(135deg,var(--mm-muted) 50%,transparent 50%);
+  background-position:calc(100% - 17px) 50%, calc(100% - 12px) 50%;
+  background-size:5px 5px, 5px 5px;
+  background-repeat:no-repeat;
+  padding-right:32px; cursor:pointer;
+}
+select.mm-pick:focus { border-color:var(--mm-red); }
+.mm-pick-free { font-style:italic; }
 /* ── Vérification des contradictions IA (v7.1.9) ── */
 .cf-overlay {
   position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center;
