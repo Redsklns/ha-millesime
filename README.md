@@ -129,6 +129,23 @@ L'intégralité de Millésime a été conçue et développée en collaboration a
 
 *Les 30 derniers jours — l'historique complet est disponible dans les [releases GitHub](https://github.com/Redsklns/ha-millesime/releases).*
 
+### [7.1.11] — 2026-08
+Correctif d'affichage 3D sur mobile (grandes caves).
+
+- 🐛 **Casiers manquants en vue 3D sur mobile** : sur une grande cave (13 casiers × 3 niveaux), plusieurs casiers n'apparaissaient pas — et en réduisant l'espacement des clayettes, il en réapparaissait. Cause : la scène demandait un tampon de rendu d'environ 7000 pixels, alors que la quasi-totalité des GPU Android plafonnent à 4096. Le navigateur écrêtait silencieusement le tampon, tronquant le haut de la cave. Les ordinateurs, dont la limite est plus élevée, n'étaient pas concernés — ce qui rendait le défaut invisible côté développeur
+- 🐛 **Déplacement impossible en 3D sur ces mêmes caves** : conséquence du même écrêtage. L'image affichée ne correspondant plus à la projection, les appuis et le glisser-déposer tombaient à côté de leur cible
+- 🐛 **Déplacement impossible d'un étage à un autre** : sur une grande cave, la scène 3D mesure plusieurs milliers de pixels et l'on ne voit que deux ou trois étages à la fois. Le glisser-déposer exigeant que la bouteille et sa destination soient visibles simultanément, viser un autre étage était matériellement impossible. **La page défile désormais toute seule** quand on approche du haut ou du bas de l'écran pendant un glisser, à une vitesse proportionnelle à la proximité du bord
+- ✅ **Le tampon de rendu s'adapte désormais à la limite réelle du GPU** : la finesse du rendu est réduite en premier (imperceptible, et seulement sur les très grandes caves), et un dézoom n'intervient qu'en dernier recours — mieux vaut une cave entièrement visible qu'une cave tronquée
+
+### [7.1.10] — 2026-08
+Menus déroulants pour le référentiel viticole.
+
+- 🐛 **Le référentiel de la 7.1.9 était invisible** : les champs Pays, Région, Appellation et Cépages s'appuyaient sur des listes de suggestions qui n'offraient aucun repère — ni flèche, ni indication — et n'apparaissaient qu'après avoir commencé à taper. Beaucoup d'utilisateurs ne pouvaient tout simplement pas savoir qu'un référentiel de 1158 appellations existait
+- ✅ **De vrais menus déroulants**, avec leur flèche, affichant directement les choix possibles. Sur mobile, le sélecteur natif s'ouvre en molette, bien plus confortable
+- ✅ **La saisie libre est préservée** : une option « ✏️ Autre (saisir)… » ouvre un champ texte pour une appellation ou un cépage absent du référentiel. Une valeur déjà enregistrée hors référentiel reste affichée et modifiable
+- ✅ **Cascade et déductions inchangées** : le pays filtre les régions, la région filtre les appellations, et choisir une appellation renseigne toujours automatiquement sa région et son pays
+- ✅ **Cépages** : le menu ajoute directement le cépage choisi aux étiquettes, sans étape intermédiaire
+
 ### [7.1.9] — 2026-08
 Saisie complète, référentiel viticole mondial et vérification des propositions de l'IA.
 
