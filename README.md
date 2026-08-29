@@ -129,6 +129,11 @@ L'intégralité de Millésime a été conçue et développée en collaboration a
 
 *Les 30 derniers jours — l'historique complet est disponible dans les [releases GitHub](https://github.com/Redsklns/ha-millesime/releases).*
 
+### [7.1.12] — 2026-08
+Publication corrective.
+
+- 🔁 **Republication du correctif de recherche sous un nouveau numéro** : la correction de la recherche de vin avait été intégrée à la 7.1.11 sans changer le numéro de version. Le mécanisme de cache s'appuyant sur ce numéro, les installations déjà en 7.1.11 ne rechargeaient pas le fichier corrigé. Aucune autre modification
+
 ### [7.1.11] — 2026-08
 Correctif d'affichage 3D sur mobile (grandes caves).
 
