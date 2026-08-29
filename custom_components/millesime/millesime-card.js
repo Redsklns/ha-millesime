@@ -2151,6 +2151,35 @@ class MillesimeCard extends HTMLElement {
     return refresh;
   }
 
+  // Contexte transmis à l'IA pour l'identification (v7.1.9, DÉFINIE en v7.1.11).
+  // Cette fonction était appelée par la recherche et par « Identifier avec mes
+  // infos » mais n'avait jamais été écrite : chaque recherche échouait aussitôt
+  // sur « _formContext is not a function ». La promesse étant rejetée avant
+  // toute mise à jour de l'affichage, le message « Recherche en cours… » restait
+  // affiché indéfiniment et aucun résultat n'apparaissait.
+  // On ne transmet que les champs RENSEIGNÉS : appellation, producteur et
+  // millésime suffisent souvent à lever une ambiguïté (deux cuvées d'un même
+  // château, par exemple), pour un surcoût de quelques dizaines de tokens.
+  _formContext(box) {
+    const v = (id) => box.querySelector(`#${id}`)?.value?.trim() || "";
+    const ctx = {
+      name:        v("bt-name"),
+      vintage:     v("bt-vintage"),
+      producer:    v("bt-producer"),
+      appellation: v("bt-appellation"),
+      region:      v("bt-region"),
+      country:     v("bt-country"),
+      grapes:      v("bt-grapes"),
+    };
+    // La couleur n'est transmise que si elle a été CHOISIE. Le sélecteur vaut
+    // « rouge » par défaut : l'envoyer systématiquement orienterait l'IA vers un
+    // rouge alors que l'utilisateur n'a rien indiqué.
+    const t = box.querySelector("#bt-type")?.value || "";
+    if (t && t !== "red") ctx.type = t;
+    for (const k of Object.keys(ctx)) if (!ctx[k]) delete ctx[k];
+    return ctx;
+  }
+
   _bottleFormHTML(wine, pendingSlot) {
     const racks = this._data?.cellar?.racks || [];
     const isEdit = !!wine;
