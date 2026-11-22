@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import unicodedata
 import uuid
@@ -37,42 +38,36 @@ DOMAIN    = "millesime"
 PLATFORMS = ["sensor"]
 DATA_FILE = "millesime_data.json"
 VERSION   = "7.1.12"
+_SAVE_LOCK = threading.Lock()
 
 OFF_UA       = f"Millesime-HA/{VERSION} (github.com/Redsklns/ha-millesime)"
 # Deux modèles séparés = deux pools de quota indépendants (free tier)
-# Texte  : gemini-3.1-flash-lite — léger, rapide (tier gratuit)
-# Photo  : gemini-3-flash        — meilleur en vision (tier gratuit)
-# Repli automatique sur la génération 2.5 si le modèle 3 est indisponible (404).
-# ── Modèles Gemini : découverte dynamique (v7.1.3) ───────────────────────────
-# PROBLÈME résolu : coder en dur des noms « de pointe » (gemini-3-flash…) casse
-# le scan avec un 404 chez les comptes qui n'y ont pas accès. SOLUTION : au
-# démarrage on interroge l'API pour la liste RÉELLE des modèles de la clé, et on
-# choisit automatiquement les meilleurs. Ces constantes ne sont plus que le
-# REPLI si la découverte échoue — volontairement des modèles STABLES et
-# largement disponibles (2.5), pas des noms fragiles.
-GEMINI_TEXT_MODEL      = "gemini-2.5-flash"       # repli texte (stable, dispo free tier)
-GEMINI_VISION_MODEL    = "gemini-2.5-flash"       # repli vision (stable, multimodal)
-GEMINI_TEXT_FALLBACK   = "gemini-2.5-flash-lite"  # repli léger
-GEMINI_VISION_FALLBACK = "gemini-2.5-flash-lite"
+# Priorité : gemini-3.5-flash-lite (rapide, multimodal, optimisé extraction JSON)
+# → gemini-3.6-flash / 3.8-flash → repli 2.5-flash
+GEMINI_TEXT_MODEL      = "gemini-3.5-flash-lite"  # repli texte rapide (dispo free tier)
+GEMINI_VISION_MODEL    = "gemini-3.5-flash-lite"  # repli vision rapide (multimodal)
+GEMINI_TEXT_FALLBACK   = "gemini-2.5-flash"       # repli stable
+GEMINI_VISION_FALLBACK = "gemini-2.5-flash"
 GEMINI_BASE_URL    = "https://generativelanguage.googleapis.com/v1beta/models/"
 # Alias pour compatibilité
 GEMINI_MODEL = GEMINI_TEXT_MODEL
 
-# Ordre de PRÉFÉRENCE (du meilleur au plus léger) : à la découverte, on retient
-# le 1er modèle réellement disponible correspondant à chaque catégorie. On liste
-# plusieurs générations pour survivre aux évolutions de nommage de Google —
-# celles qui n'existent pas sont simplement ignorées.
+# Ordre de PRÉFÉRENCE : à la découverte, on retient les modèles réellement
+# disponibles pour la clé API, du meilleur ratio vitesse/coût au repli stable.
 _PREF_TEXT = [
-    "gemini-3.5-flash", "gemini-3.1-flash", "gemini-3-flash",
+    "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.8-flash",
     "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite",
 ]
 _PREF_VISION = [   # modèles multimodaux (lecture d'étiquette)
-    "gemini-3.5-flash", "gemini-3.1-flash", "gemini-3-flash",
+    "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.8-flash",
     "gemini-2.5-flash", "gemini-2.5-flash-lite",
 ]
 # Résultat de la découverte, rempli au démarrage (None = pas encore fait)
 # Chaîne unique de résolution utilisée par tous les appels.
 _GEMINI_MODELS: dict = {"text": None, "vision": None, "discovered": False}
+# Quarantaine temporaire par modèle sur 503 / timeout / 429
+_MODEL_COOLDOWN: dict[str, float] = {}
+_COOLDOWN_SEC = 600.0
 
 
 async def _discover_gemini_models(hass: HomeAssistant, api_key: str) -> None:
@@ -127,32 +122,27 @@ async def _discover_gemini_models(hass: HomeAssistant, api_key: str) -> None:
 
 
 def _thinking_cfg(model: str) -> dict:
-    """Réglage du « raisonnement » (thinking) selon la famille de modèle (v7.1.5).
-
-    POURQUOI C'EST CRITIQUE : depuis la v7.1.3, le modèle par défaut est
-    gemini-2.5-flash, dont le thinking DYNAMIQUE est actif par défaut. Or les
-    tokens de réflexion sont décomptés de maxOutputTokens ET rallongent
-    fortement la réponse : nos appels (estimation de prix à 32 tokens, sommelier
-    à 512-1536) se retrouvaient tronqués ou en timeout → « IA indisponible ».
-    Millésime n'a besoin d'aucun raisonnement long : ce sont des extractions
-    structurées courtes. On désactive donc le thinking partout où c'est permis.
-
-    - gemini-2.5-*  : thinkingBudget = 0 → thinking désactivé (documenté)
-    - gemini-3*     : thinkingLevel = "low" (la famille 3 ne permet pas l'arrêt
-                      complet, on demande le niveau minimal)
-    - autre/inconnu : rien (on n'envoie jamais un champ non supporté)
-    """
+    """Réglage minimal du « raisonnement » (thinking) selon la famille de modèle."""
     m = (model or "").lower()
     if "2.5" in m:
         return {"thinkingConfig": {"thinkingBudget": 0}}
-    if m.startswith("gemini-3"):
+    if m.startswith(("gemini-3.6", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash")):
+        return {"thinkingConfig": {"thinkingLevel": "minimal"}}
+    if m.startswith(("gemini-4", "gemini-3")):
         return {"thinkingConfig": {"thinkingLevel": "low"}}
     return {}
 
 
 def _gen_cfg(model: str, base: dict) -> dict:
-    """generationConfig complet pour un modèle donné (base + réglage thinking)."""
-    return {**base, **_thinking_cfg(model)}
+    """generationConfig complet pour un modèle donné (base + réglage thinking).
+    Retire temperature/topP/topK sur Gemini 3.6+ et Gemini 4 (dépréciés par l'API).
+    """
+    m = (model or "").lower()
+    cleaned = dict(base)
+    if m.startswith(("gemini-4", "gemini-3.6", "gemini-3.7", "gemini-3.8")):
+        for k in ("temperature", "topP", "topK", "top_p", "top_k"):
+            cleaned.pop(k, None)
+    return {**cleaned, **_thinking_cfg(model)}
 
 
 def _text_models() -> list[str]:
@@ -316,8 +306,12 @@ def _load(hass: HomeAssistant) -> dict:
 
 def _save(hass: HomeAssistant, data: dict) -> None:
     try:
-        with open(_path(hass), "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        p = _path(hass)
+        tmp = f"{p}.tmp.{os.getpid()}.{threading.get_ident()}"
+        with _SAVE_LOCK:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, p)
     except Exception as exc:
         _LOGGER.error("Millésime — erreur sauvegarde : %s", exc)
 
@@ -718,7 +712,8 @@ def _bump_ai_usage(hass: HomeAssistant, api_data: dict | None) -> dict:
     meta = (api_data or {}).get("usageMetadata", {}) or {}
     call_usage = {
         "prompt": int(meta.get("promptTokenCount", 0) or 0),
-        "output": int(meta.get("candidatesTokenCount", 0) or 0),
+        "output": int(meta.get("candidatesTokenCount", 0) or 0)
+                  + int(meta.get("thoughtsTokenCount", 0) or 0),
     }
     today = datetime.now().strftime("%Y-%m-%d")
     day = {"date": today, "prompt": 0, "output": 0, "calls": 0}
@@ -734,8 +729,8 @@ def _bump_ai_usage(hass: HomeAssistant, api_data: dict | None) -> dict:
                 au["output"] += call_usage["output"]
                 au["calls"]  += 1
                 day = dict(au)
-                # Persistance silencieuse (fréquence faible : appels manuels)
-                hass.async_create_task(hass.async_add_executor_job(_save, hass, d))
+                # Persistance silencieuse (async_add_executor_job planifie déjà la Future)
+                hass.async_add_executor_job(_save, hass, d)
                 break
     except Exception as exc:  # le compteur ne doit jamais casser un appel IA
         _LOGGER.debug("Millésime — compteur tokens: %s", exc)
@@ -772,12 +767,21 @@ async def _gemini_call(
     Retourne (data_json | None, code_erreur | None).
     """
     session = session or async_get_clientsession(hass)
-    saw_404 = saw_timeout = saw_other = False
+    saw_404 = saw_timeout = saw_429 = saw_other = False
 
-    for model in models:
-        # tentative 0 = avec le réglage thinking ; tentative 1 = sans (si 400)
+    now = time.time()
+    active = [m for m in models if now >= _MODEL_COOLDOWN.get(m, 0.0)]
+    ordered = active + [m for m in models if m not in active]
+
+    for idx, model in enumerate(ordered):
+        has_next = idx < (len(ordered) - 1)
+        req_timeout = min(timeout, 12) if has_next else min(timeout, 25)
+        # tentative 0 = avec le réglage thinking ; tentative 1 = sans (si 400/500 champ refusé)
         for attempt in (0, 1):
-            cfg = _gen_cfg(model, gen_cfg) if attempt == 0 else dict(gen_cfg)
+            cfg = _gen_cfg(model, gen_cfg) if attempt == 0 else {
+                k: v for k, v in gen_cfg.items()
+                if k not in ("temperature", "topP", "topK", "top_p", "top_k")
+            }
             body = {**body_base, "generationConfig": cfg}
             try:
                 async with session.post(
@@ -785,56 +789,59 @@ async def _gemini_call(
                     params={"key": api_key},
                     json=body,
                     headers={"Content-Type": "application/json"},
-                    timeout=timeout,
+                    timeout=req_timeout,
                 ) as resp:
                     status = resp.status
                     if status == 200:
+                        _MODEL_COOLDOWN.pop(model, None)
                         data = await resp.json(content_type=None)
                         _LOGGER.debug("%s : réponse de %s", label, model)
                         return data, None
-                    if status in (400, 500, 503) and attempt == 0 and _thinking_cfg(model):
-                        # v7.1.8 : un modèle qui n'accepte pas le réglage thinking
-                        # ne répond PAS toujours 400 — Google renvoie parfois 500
-                        # sur un champ de configuration non supporté. On ne se
-                        # limite donc plus au 400 : sinon l'appel échouait sur
-                        # tous les modèles en « service indisponible », alors
-                        # qu'un simple réessai sans le réglage aurait suffi.
+                    if status in (400, 500) and attempt == 0 and _thinking_cfg(model):
                         _LOGGER.warning(
                             "%s : HTTP %s avec thinkingConfig (%s) → réessai sans ce réglage",
                             label, status, model)
                         continue
                     if status == 404:
                         saw_404 = True
+                        _MODEL_COOLDOWN[model] = time.time() + 3600.0
                         _LOGGER.warning("%s : modèle %s indisponible (404), repli", label, model)
                         break                      # → modèle suivant
-                    if status in (429, 400, 401, 403):
+                    if status == 429:
+                        saw_429 = True
+                        _MODEL_COOLDOWN[model] = time.time() + _COOLDOWN_SEC
+                        _LOGGER.warning("%s : quota atteint (429) sur %s, repli modèle suivant", label, model)
+                        break                      # → chaque modèle a son propre quota
+                    if status in (400, 401, 403):
                         saw_other = True
                         _LOGGER.warning("%s : HTTP %s sur %s", label, status, model)
                         return None, _gemini_error_code(status)
-                    saw_other = True               # 5xx : panne passagère
-                    _LOGGER.warning("%s : HTTP %s sur %s, repli", label, status, model)
+                    saw_other = True               # 5xx (ex: 503 forte demande) → repli immédiat
+                    _MODEL_COOLDOWN[model] = time.time() + _COOLDOWN_SEC
+                    _LOGGER.warning("%s : HTTP %s sur %s, mise en quarantaine %ds et repli",
+                                    label, status, model, int(_COOLDOWN_SEC))
                     break                          # → modèle suivant
             except asyncio.TimeoutError:
                 saw_timeout = True
-                _LOGGER.warning("%s : délai dépassé (%s, %ss)", label, model, timeout)
+                _MODEL_COOLDOWN[model] = time.time() + _COOLDOWN_SEC
+                _LOGGER.warning("%s : délai dépassé (%s, %ss) → quarantaine %ds et repli",
+                                label, model, req_timeout, int(_COOLDOWN_SEC))
                 break
             except Exception as exc:
                 saw_other = True
                 _LOGGER.warning("%s : erreur (%s) %s", label, model, exc)
                 break
 
-    if saw_404 and not saw_other and not saw_timeout:
+    if saw_404 and not saw_other and not saw_timeout and not saw_429:
         _LOGGER.error(
             "%s : AUCUN modèle utilisable (%s). Vérifiez l'accès de votre clé "
             "Gemini aux modèles sur aistudio.google.com.", label, ", ".join(models))
-        # Auto-récupération : si la découverte n'a jamais abouti (coupure réseau
-        # au démarrage, clé ajoutée depuis…), on la relance en tâche de fond.
-        # Le prochain essai de l'utilisateur utilisera alors les VRAIS modèles
-        # de sa clé au lieu du repli codé en dur.
         if not _GEMINI_MODELS["discovered"] and api_key:
             _LOGGER.info("%s : redécouverte des modèles Gemini programmée", label)
             hass.async_create_task(_discover_gemini_models(hass, api_key))
         return None, ERR_NO_MODEL
+    if saw_429 and not saw_other and not saw_timeout:
+        return None, ERR_QUOTA_EXCEEDED
     if saw_timeout and not saw_other:
         return None, ERR_TIMEOUT
     return None, ERR_UNAVAILABLE
@@ -1123,15 +1130,9 @@ async def _gemini_analyze_photo(
     # aromatique et structure) est conservé, c'est tout l'intérêt du scan.
     # Budget doublé par sécurité : plafond non facturé.
     gen = {"temperature": 0.1, "maxOutputTokens": 4096, "responseMimeType": "application/json"}
-    data, last_code = None, ERR_UNAVAILABLE
-    for attempt in range(2):
-        data, last_code = await _gemini_call(
-            hass, api_key, _vision_models(), body, gen, 45, "Gemini photo",
-        )
-        if data is not None or last_code not in (ERR_UNAVAILABLE, ERR_TIMEOUT):
-            break
-        if attempt == 0:
-            await asyncio.sleep(3.0)
+    data, last_code = await _gemini_call(
+        hass, api_key, _vision_models(), body, gen, 25, "Gemini photo",
+    )
 
     if data is None:
         _LOGGER.warning("Gemini photo : échec sur tous les modèles (%s)", last_code)
@@ -1473,7 +1474,7 @@ async def _async_register_card(hass: HomeAssistant) -> None:
                 requires_auth = False
 
                 async def get(self, request):
-                    return web.FileResponse(card_path)
+                    return web.FileResponse(card_path, headers={"Cache-Control": "no-cache"})
 
             hass.http.register_view(_MillesimeCardView())
             ok = True

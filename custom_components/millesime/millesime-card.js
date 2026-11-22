@@ -2531,12 +2531,17 @@ class MillesimeCard extends HTMLElement {
     const onPhotoFile = async (inp) => {
       const file = inp instanceof File ? inp : inp.files?.[0];
       if (!file) return;
+      if (photoThumb) {
+        photoThumb.classList.remove("empty");
+        photoThumb.innerHTML = `<span class="mm-photo-ph"><span class="mm-spinner"></span></span>`;
+      }
       try {
-        const compressed = await this._compressImage(file);
+        const compressed = await this._compressImage(file._scanDataUrl || file, 600, 0.7);
         setPhoto(compressed);
         if (photoUrl) photoUrl.value = "";   // on privilégie la photo prise
         this._showToast("success", "Photo ajoutée");
       } catch (e) {
+        setPhoto(photoHidden?.value || "");
         this._showToast("error", "Impossible de lire cette image");
       }
       if (!(inp instanceof File)) inp.value = "";   // permet de reprendre la même photo ensuite
@@ -2721,10 +2726,9 @@ class MillesimeCard extends HTMLElement {
       const file = inp instanceof File ? inp : inp.files?.[0];
       if (!file) return;
 
-      // Aperçu immédiat
-      const url = URL.createObjectURL(file);
+      // Aperçu immédiat (avant tout redimensionnement / encodage)
       imgWrap.innerHTML = `<div class="mm-photo-loading">
-        <img src="${url}" style="width:80px;border-radius:8px;opacity:0.6;display:block;margin:0 auto 6px">
+        ${file._scanDataUrl ? `<img src="${file._scanDataUrl}" style="width:80px;border-radius:8px;opacity:0.6;display:block;margin:0 auto 6px">` : ""}
         <div style="text-align:center;font-size:0.85em;color:var(--mm-muted,#888)">
           <span class="mm-spinner"></span> Analyse de l'étiquette...
         </div>
@@ -2732,35 +2736,53 @@ class MillesimeCard extends HTMLElement {
       results.innerHTML = "";
       results.style.display = "none";
       banner.innerHTML = "";
+      // Laisse le navigateur peindre l'indicateur de chargement immédiatement
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
-      // Encoder en base64 (robuste : certains navigateurs mobiles renvoient un résultat vide)
-      let b64;
+      // Redimensionner à 1024 px max (JPEG ~80-150 Ko) pour rester largement sous la
+      // limite WebSocket de 4 Mo de Home Assistant (les photos galerie font 5-15 Mo)
+      let scanDataUrl;
+      let mimeType = "image/jpeg";
       try {
-        b64 = await new Promise((res, rej) => {
-          const r = new FileReader();
-          r.onload = () => {
-            const result = r.result || "";
-            const comma = String(result).indexOf(",");
-            res(comma >= 0 ? String(result).slice(comma + 1) : "");
-          };
-          r.onerror = () => rej(new Error("Lecture fichier impossible"));
-          r.readAsDataURL(file);
-        });
+        scanDataUrl = file._scanDataUrl || await this._compressImage(file, 1024, 0.82);
       } catch (e) {
-        imgWrap.innerHTML = `<div class="mm-photo-error">Impossible de lire l'image. Réessayez.</div>`;
-        URL.revokeObjectURL(url);
-        return;
+        // Repli si format exotique (ex: HEIC non décodable par WebView) mais < 2.5 Mo
+        if (file.size && file.size < 2600000) {
+          try {
+            scanDataUrl = await new Promise((res, rej) => {
+              const r = new FileReader();
+              r.onload = () => res(String(r.result || ""));
+              r.onerror = () => rej(new Error("Lecture impossible"));
+              r.readAsDataURL(file);
+            });
+            mimeType = file.type || "image/jpeg";
+          } catch (e2) { scanDataUrl = ""; }
+        }
+        if (!scanDataUrl) {
+          imgWrap.innerHTML = `<div class="mm-photo-error">Impossible de lire cette image (format non supporté ou fichier trop lourd).</div>`;
+          if (!(inp instanceof File)) inp.value = "";
+          return;
+        }
       }
+      if (!file._scanDataUrl && mimeType === "image/jpeg") {
+        imgWrap.innerHTML = `<div class="mm-photo-loading">
+          <img src="${scanDataUrl}" style="width:80px;border-radius:8px;opacity:0.6;display:block;margin:0 auto 6px">
+          <div style="text-align:center;font-size:0.85em;color:var(--mm-muted,#888)">
+            <span class="mm-spinner"></span> Analyse de l'étiquette...
+          </div>
+        </div>`;
+      }
+      const comma = String(scanDataUrl || "").indexOf(",");
+      const b64 = comma >= 0 ? String(scanDataUrl).slice(comma + 1) : "";
       if (!b64) {
         imgWrap.innerHTML = `<div class="mm-photo-error">Image vide ou format non supporté.</div>`;
-        URL.revokeObjectURL(url);
+        if (!(inp instanceof File)) inp.value = "";
         return;
       }
 
-      const mimeType = file.type || "image/jpeg";
-      // La photo scannée devient aussi la photo affichée de la bouteille (compressée)
+      // La photo scannée devient aussi la photo affichée de la bouteille (miniature 600 px)
       try {
-        const compressed = await this._compressImage(file);
+        const compressed = await this._compressImage(scanDataUrl, 600, 0.7);
         const ph = box.querySelector("#bt-image_url");
         const th = box.querySelector("#bt-photo-thumb");
         const rm = box.querySelector("#bt-photo-rm");
@@ -2769,7 +2791,6 @@ class MillesimeCard extends HTMLElement {
         if (rm) rm.classList.remove("hidden");
       } catch (e) { /* la compression échoue → on garde au moins l'analyse */ }
       const response = await this._analyzePhoto(b64, mimeType);
-      URL.revokeObjectURL(url);
 
       const { results: wines = [], error } = response;
 
@@ -5401,14 +5422,43 @@ class MillesimeCard extends HTMLElement {
         overlay.remove();
         resolve(result);
       };
+      let capturing = false;
       btnShot.addEventListener("click", () => {
+        if (capturing) return;
+        capturing = true;
+        btnShot.disabled = true;
+        btnShot.textContent = "⏳ Capture…";
+        try { video.pause(); } catch (err) {}
+
+        // Redimensionne directement à 1024 px max pendant la capture (suffisant
+        // pour Gemini Vision et évite d'encoder 1920x1080 sur un flux caméra actif)
+        const maxDim = 1024;
+        let w = video.videoWidth || 1280;
+        let h = video.videoHeight || 720;
+        if (w > h && w > maxDim) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else if (h > maxDim)     { w = Math.round(w * maxDim / h); h = maxDim; }
+
         const canvas = document.createElement("canvas");
-        canvas.width = video.videoWidth || 1280;
-        canvas.height = video.videoHeight || 720;
-        canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-        canvas.toBlob((blob) => {
-          done(blob ? new File([blob], "capture.jpg", { type: "image/jpeg" }) : null);
-        }, "image/jpeg", 0.92);
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext("2d").drawImage(video, 0, 0, w, h);
+
+        // Coupe immédiatement le flux caméra et ferme l'overlay avant l'encodage JPEG
+        try { stream.getTracks().forEach((t) => t.stop()); } catch (err) {}
+        overlay.remove();
+
+        try {
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
+          const b64 = dataUrl.split(",")[1] || "";
+          const bin = atob(b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const file = new File([bytes], "capture.jpg", { type: "image/jpeg" });
+          file._scanDataUrl = dataUrl;
+          resolve(file);
+        } catch (err) {
+          resolve(null);
+        }
       });
       btnCancel.addEventListener("click", () => done("cancel"));
       bar.appendChild(btnCancel);
@@ -5419,24 +5469,41 @@ class MillesimeCard extends HTMLElement {
     });
   }
 
-  _compressImage(fileOrDataUrl, maxSize = 600, quality = 0.7) {
+  async _compressImage(fileOrDataUrl, maxSize = 600, quality = 0.7) {
+    const drawToJpeg = (source, sw, sh) => {
+      let w = sw, h = sh;
+      if (w > h && w > maxSize) { h = Math.round(h * maxSize / w); w = maxSize; }
+      else if (h > maxSize)     { w = Math.round(w * maxSize / h); h = maxSize; }
+      const cv = document.createElement("canvas");
+      cv.width = w; cv.height = h;
+      const ctx = cv.getContext("2d");
+      ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(source, 0, 0, w, h);
+      return cv.toDataURL("image/jpeg", quality);
+    };
+
+    // Chemin rapide sans blob: URL (évite les blocages CSP des WebView Android/iOS)
+    if (fileOrDataUrl instanceof Blob && typeof createImageBitmap === "function") {
+      try {
+        const bmp = await createImageBitmap(fileOrDataUrl);
+        try {
+          return drawToJpeg(bmp, bmp.width, bmp.height);
+        } finally {
+          try { bmp.close(); } catch (e) {}
+        }
+      } catch (e) { /* repli FileReader ci-dessous */ }
+    }
+
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
-        let { width: w, height: h } = img;
-        if (w > h && w > maxSize) { h = Math.round(h * maxSize / w); w = maxSize; }
-        else if (h > maxSize)     { w = Math.round(w * maxSize / h); h = maxSize; }
-        const cv = document.createElement("canvas");
-        cv.width = w; cv.height = h;
-        const ctx = cv.getContext("2d");
-        ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, w, h);
-        ctx.drawImage(img, 0, 0, w, h);
-        try { resolve(cv.toDataURL("image/jpeg", quality)); }
+        try { resolve(drawToJpeg(img, img.width, img.height)); }
         catch (e) { reject(e); }
       };
       img.onerror = () => reject(new Error("Image illisible"));
-      if (typeof fileOrDataUrl === "string") img.src = fileOrDataUrl;
-      else {
+      if (typeof fileOrDataUrl === "string") {
+        img.src = fileOrDataUrl;
+      } else {
         const r = new FileReader();
         r.onload = () => { img.src = r.result; };
         r.onerror = () => reject(new Error("Lecture fichier impossible"));
