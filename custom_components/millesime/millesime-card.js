@@ -6677,6 +6677,46 @@ class MillesimeCard extends HTMLElement {
     const wines  = data.wines || [];
     if (!racks.length) { stage.innerHTML = ""; return; }
 
+    const fallbackTo2D = (msg) => {
+      this._unmount3D();
+      this._showToast("warning", msg || "Vue 3D indisponible sur ce navigateur — passage en vue 2D.");
+      this._view = "2d";
+      this._viewTouched = true;
+      this._render();
+    };
+
+    // Vérification préalable WebGL matériel (évite un canvas noir/vide sur desktop
+    // lorsque l'accélération GPU est désactivée ou saturée par une grande cave)
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
+    } catch (e1) {
+      try {
+        renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true });
+      } catch (e2) {
+        fallbackTo2D("WebGL indisponible sur ce navigateur — passage en vue 2D.");
+        return;
+      }
+    }
+    const glCtx = renderer.getContext();
+    if (!glCtx || glCtx.isContextLost?.()) {
+      try { renderer.dispose(); } catch (e) {}
+      fallbackTo2D("Contexte WebGL indisponible — passage en vue 2D.");
+      return;
+    }
+    try {
+      const dbg = glCtx.getExtension?.("WEBGL_debug_renderer_info");
+      const gpuName = String(
+        (dbg && glCtx.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) ||
+        glCtx.getParameter(glCtx.RENDERER) || ""
+      );
+      if (/swiftshader|llvmpipe|softpipe|basic render driver|software/i.test(gpuName)) {
+        try { renderer.dispose(); renderer.forceContextLoss?.(); } catch (e) {}
+        fallbackTo2D("Accélération matérielle GPU désactivée sur ce navigateur — passage en vue 2D.");
+        return;
+      }
+    } catch (e) {}
+
     // slot occupé → { wine, slotIdx }
     const slotOf = {};
     wines.forEach(w => w.slots?.forEach((s, si) => {
@@ -7540,8 +7580,7 @@ class MillesimeCard extends HTMLElement {
 
     const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
 
-    // ── Renderer HD ──
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    // ── Configuration Renderer HD (créé en amont) ──
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     if (SHADOWS_3D_PCF) {                       // shadow map PCF — inactif par défaut
       renderer.shadowMap.enabled = true;
@@ -7551,17 +7590,31 @@ class MillesimeCard extends HTMLElement {
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.12;
 
+    const canvas3d = renderer.domElement;
+    let ctxLossCount = 0;
+    const onCtxLost = (e) => {
+      e.preventDefault();
+      ctxLossCount++;
+      setTimeout(() => {
+        if (this._view === "3d" && (ctxLossCount >= 2 || glCtx.isContextLost?.())) {
+          fallbackTo2D("Mémoire WebGL insuffisante sur cet écran — passage en vue 2D.");
+        }
+      }, 1500);
+    };
+    const onCtxRestored = () => {
+      if (this._view === "3d") requestAnimationFrame(() => this._mount3D());
+    };
+    canvas3d.addEventListener("webglcontextlost", onCtxLost, false);
+    canvas3d.addEventListener("webglcontextrestored", onCtxRestored, false);
+
     stage.innerHTML = "";
     stage.appendChild(renderer.domElement);
     renderer.domElement.style.cssText = "display:block;width:100%;height:100%;border-radius:12px;touch-action:pan-y";
 
-    const glCtx = renderer.getContext();
     const draw = () => {
       // Ne JAMAIS appeler render() sur un contexte perdu : three lit alors
       // gl.getProgramInfoLog() == null et plante sur `null.trim()` (visible via
-      // le chemin PMREM de génération de l'env-map au premier rendu). Un contexte
-      // peut sauter entre deux remontages (rotation/reconnexion) ; on saute le
-      // rendu, le remontage suivant reconstruira une scène saine.
+      // le chemin PMREM de génération de l'env-map au premier rendu).
       if (glCtx.isContextLost?.()) return;
       renderer.render(scene, cam);
     };
@@ -7630,8 +7683,13 @@ class MillesimeCard extends HTMLElement {
     // disparaissaient, et l'image ne correspondant plus à la projection, les
     // taps et le glisser-déposer tombaient à côté. Sur PC, la limite plus élevée
     // masquait le problème — d'où un bug invisible côté développeur.
-    const MAX_TEX = Math.max(2048, Math.min(
-      glCtx?.getParameter?.(glCtx.MAX_TEXTURE_SIZE) || 4096, 8192));
+    const maxTex = glCtx?.getParameter?.(glCtx.MAX_TEXTURE_SIZE) || 4096;
+    const maxRb  = glCtx?.getParameter?.(glCtx.MAX_RENDERBUFFER_SIZE) || 4096;
+    const maxVp  = glCtx?.getParameter?.(glCtx.MAX_VIEWPORT_DIMS);
+    const maxVpH = (maxVp && maxVp[1]) ? maxVp[1] : 4096;
+    // Plafond conservateur 4096 px (évite les échecs MSAA 4× / canvas vides sur
+    // écran Retina/HiDPI desktop quand une cave comporte beaucoup d'étagères)
+    const MAX_TEX = Math.max(2048, Math.min(maxTex, maxRb, maxVpH, 4096));
     const SAFE_PX = Math.floor(MAX_TEX * 0.97);      // marge de sécurité
     const layout = (w) => {
       curW = w;
@@ -7961,22 +8019,6 @@ class MillesimeCard extends HTMLElement {
     });
     ro.observe(stage);
 
-    // ── Mobile : perte de contexte WebGL & bascule d'orientation ──
-    // (porté de la PR #6, crédit Pulpyyyy — unifié avec notre remontage
-    //  idempotent : _mount3D() commence par _unmount3D() + token _mountTok,
-    //  donc onCtxRestored ne peut pas provoquer de double montage)
-    // 1) La WebView peut perdre le contexte WebGL (arrière-plan, mémoire,
-    //    rotation). Sans preventDefault sur "webglcontextlost", le navigateur
-    //    ne restaure JAMAIS le contexte : canvas vide définitivement. On accepte
-    //    la restauration puis on remonte toute la scène (textures, géométries et
-    //    framebuffers GPU sont invalidés par la perte).
-    const canvas3d = renderer.domElement;
-    const onCtxLost     = (e) => e.preventDefault();
-    const onCtxRestored = () => {
-      if (this._view === "3d") requestAnimationFrame(() => this._mount3D());
-    };
-    canvas3d.addEventListener("webglcontextlost", onCtxLost, false);
-    canvas3d.addEventListener("webglcontextrestored", onCtxRestored, false);
     // 2) Certaines WebView vident le back-buffer SANS émettre "webglcontextlost" :
     //    au changement d'orientation, on remesure et on redessine une fois la
     //    nouvelle taille stabilisée (double rAF). Couvre aussi le cas où la
@@ -7990,6 +8032,11 @@ class MillesimeCard extends HTMLElement {
     window.addEventListener("orientationchange", onOrient);
 
     this._three = { renderer, scene, cam, ro, canvas3d, onCtxLost, onCtxRestored, onOrient, onPick, onDown, onMove, onUp, onCancel };
+
+    if (glCtx.isContextLost?.()) {
+      fallbackTo2D("Contexte WebGL perdu au rendu 3D — passage en vue 2D.");
+      return;
+    }
   }
 
   _bind3DOverlays(stage, data, wines) {
