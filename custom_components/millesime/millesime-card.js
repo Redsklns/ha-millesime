@@ -1810,6 +1810,10 @@ class MillesimeCard extends HTMLElement {
   _rackFormHTML(rack) {
     const next  = (this._data?.cellar?.racks?.length || 0) + 1;
     const isEdit = !!rack;
+    const cellars = this._data?.cellars || [];
+    const ownerCid = rack
+      ? (cellars.find(c => (c.racks || []).some(r => r.id === rack.id))?.id || this._cellarId)
+      : this._cellarId;
     return `
       <div class="mm-header">
         <span class="mm-title">${isEdit ? "Modifier le casier" : "Nouveau casier"}</span>
@@ -1821,6 +1825,13 @@ class MillesimeCard extends HTMLElement {
           <input class="mm-input" id="fl-name" type="text"
             value="${esc(rack?.name || "Casier " + next)}" placeholder="Bordeaux, Bourgogne...">
         </div>
+        ${cellars.length > 1 ? `
+        <div class="mm-field">
+          <label class="mm-label">Cave</label>
+          <select class="mm-input" id="fl-cellar">
+            ${cellars.map(c => `<option value="${esc(c.id)}" ${c.id === ownerCid ? "selected" : ""}>${esc(c.name || "Cave")}</option>`).join("")}
+          </select>
+        </div>` : ""}
         <div class="mm-row">
           <div class="mm-field">
             <label class="mm-label">Colonnes</label>
@@ -1922,10 +1933,11 @@ class MillesimeCard extends HTMLElement {
       const orientation = box.querySelector("#fl-orientation").value;
       const levels = layout === "stacked"
         ? (parseInt(box.querySelector("#fl-levels")?.value) || 2) : 1;
+      const targetCellar = box.querySelector("#fl-cellar")?.value || this._cellarId || undefined;
       if (rack) {
-        await this._callService("update_rack", { rack_id: rack.id, name, columns: cols, shelves, layout, levels, orientation, style });
+        await this._callService("update_rack", { rack_id: rack.id, cellar_id: targetCellar, name, columns: cols, shelves, layout, levels, orientation, style });
       } else {
-        await this._callService("add_rack", { cellar_id: this._cellarId || undefined, name, columns: cols, shelves, layout, levels, orientation, slots: cols * shelves * levels, style });
+        await this._callService("add_rack", { cellar_id: targetCellar, name, columns: cols, shelves, layout, levels, orientation, slots: cols * shelves * levels, style });
       }
     });
 

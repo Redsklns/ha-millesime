@@ -1978,29 +1978,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def svc_update_rack(call: ServiceCall) -> None:
         d = _get()
-        for f in _all_racks(d):
-            if f["id"] == _call_rack_id(call):
-                for k in ["name", "columns", "shelves", "layout", "orientation"]:
-                    if k in call.data:
-                        f[k] = call.data[k]
-                if "rows" in call.data and "shelves" not in call.data:  # alias déprécié
-                    f["shelves"] = call.data["rows"]
-                if "levels" in call.data or "layout" in call.data:
-                    if f.get("layout") != "stacked":
-                        f["levels"] = 1
-                    else:
-                        try:
-                            f["levels"] = max(1, min(4, int(call.data.get("levels", f.get("levels", 2)))))
-                        except (TypeError, ValueError):
-                            f["levels"] = max(1, min(4, int(f.get("levels", 2) or 2)))
-                if "style" in call.data:
-                    style = _rack_style(call)
-                    if style:
-                        f["style"] = style
-                    else:
-                        f.pop("style", None)
-                f["slots"] = _rack_capacity(f)
+        fid = _call_rack_id(call)
+        target_cid = call.data.get("cellar_id")
+        src_cellar = None
+        f = None
+        for c in _cellars(d):
+            for r in c.get("racks", []):
+                if r.get("id") == fid:
+                    src_cellar = c
+                    f = r
+                    break
+            if f is not None:
                 break
+        if f is not None:
+            for k in ["name", "columns", "shelves", "layout", "orientation"]:
+                if k in call.data:
+                    f[k] = call.data[k]
+            if "rows" in call.data and "shelves" not in call.data:  # alias déprécié
+                f["shelves"] = call.data["rows"]
+            if "levels" in call.data or "layout" in call.data:
+                if f.get("layout") != "stacked":
+                    f["levels"] = 1
+                else:
+                    try:
+                        f["levels"] = max(1, min(4, int(call.data.get("levels", f.get("levels", 2)))))
+                    except (TypeError, ValueError):
+                        f["levels"] = max(1, min(4, int(f.get("levels", 2) or 2)))
+            if "style" in call.data:
+                style = _rack_style(call)
+                if style:
+                    f["style"] = style
+                else:
+                    f.pop("style", None)
+            f["slots"] = _rack_capacity(f)
+            if target_cid:
+                dst_cellar = next((c for c in _cellars(d) if c.get("id") == target_cid), None)
+                if dst_cellar is not None and dst_cellar is not src_cellar:
+                    src_cellar["racks"] = [r for r in src_cellar.get("racks", []) if r.get("id") != fid]
+                    dst_cellar.setdefault("racks", []).append(f)
         await _persist(d)
 
     async def svc_remove_rack(call: ServiceCall) -> None:
