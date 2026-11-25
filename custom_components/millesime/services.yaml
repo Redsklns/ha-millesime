@@ -191,11 +191,13 @@ add_rack:
 
 update_rack:
   name: Modifier un casier
-  description: Modifie un casier existant (recherché dans toutes les caves).
+  description: Modifie un casier existant (et le déplace vers une autre cave si cellar_id est fourni).
   fields:
     rack_id:
       description: ID du casier
       required: true
+    cellar_id:
+      description: ID de la cave cible (optionnel, pour transférer le casier vers une autre cave)
     name:
       description: Nouveau nom
     columns:
